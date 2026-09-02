@@ -434,7 +434,20 @@
 
   <!-- ─── Core Application Logic ──────────────────────────────── -->
   <script>
-    const { invoke } = window.__TAURI__.core;
+    function getTauriInvoke() {
+      if (window.__TAURI__ && window.__TAURI__.core && typeof window.__TAURI__.core.invoke === 'function') {
+        return window.__TAURI__.core.invoke;
+      }
+      if (window.__TAURI__ && typeof window.__TAURI__.invoke === 'function') {
+        return window.__TAURI__.invoke;
+      }
+      return async (cmd) => {
+        console.warn('Tauri invoke not yet available:', cmd);
+        return null;
+      };
+    }
+
+    const invoke = (cmd, args) => getTauriInvoke()(cmd, args);
 
     let heartbeatInterval = null;
     let commandPollInterval = null;
