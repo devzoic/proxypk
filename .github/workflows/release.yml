@@ -60,19 +60,9 @@ jobs:
           tagName: ${{ inputs.tag || github.ref_name }}
           releaseName: 'ProxyPK Desktop Agent ${{ inputs.tag || github.ref_name }}'
           releaseBody: |
-            ### ProxyPK Desktop Node Agent Release
-
-            #### What's New:
-            - Automated OTA background updates
-            - Intelligent residential proxy routing
-            - Multi-interface hardware binding (Wingle LTE / Wi-Fi / Ethernet)
-            - Live activity streaming & low-latency control plane synchronization
-            - High-performance SOCKS5 and HTTP/HTTPS dual proxy engine
-
-            #### Assets Included:
-            - **macOS**: `.dmg` and `.app` (Apple Silicon & Intel)
-            - **Linux**: `.AppImage` and `.deb` (Ubuntu, Debian, Lubuntu)
-            - **Windows**: `.msi` and `.exe` installer
+            ### ProxyPK Desktop Agent Release
+            
+            Official release for macOS, Linux, and Windows.
           releaseDraft: false
           prerelease: false
           args: ${{ matrix.args }}
