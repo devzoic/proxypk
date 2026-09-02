@@ -1,0 +1,1173 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ProxyPK Node Agent</title>
+  <script>
+    // Apply saved theme immediately before CSS render to prevent flash
+    (function() {
+      const savedTheme = localStorage.getItem('proxypk_theme') || 'dark';
+      if (savedTheme === 'system') {
+        const isDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+        document.documentElement.setAttribute('data-theme', isDark ? 'dark' : 'light');
+      } else {
+        document.documentElement.setAttribute('data-theme', savedTheme);
+      }
+    })();
+  </script>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.css" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div id="app">
+    <!-- ─── Screen 1: Main Desktop Application ──────────────────── -->
+    <div id="dashboard-screen" class="screen active">
+      <div class="app-shell">
+        <!-- ─── Left Sidebar Nav ──────────────────────────────────── -->
+        <aside class="sidebar">
+          <!-- Sidebar Brand -->
+          <div class="sidebar-brand">
+            <img src="assets/app-icon.png" alt="ProxyPK" style="width:30px;height:30px;border-radius:8px;box-shadow:0 2px 8px rgba(0,0,0,0.3), 0 0 10px rgba(10,182,138,0.25);object-fit:cover;" />
+            <div class="brand-text-block">
+              <div class="brand-name">Proxy<span style="color:#0AB68A;">PK</span> <span class="badge-tag">AGENT</span></div>
+              <div class="brand-status" id="sidebar-status-sub">Node Active</div>
+            </div>
+          </div>
+
+          <!-- Node Identity Summary Pill -->
+          <div class="node-id-chip">
+            <div class="chip-top">
+              <span class="status-indicator-dot online" id="sidebar-dot"></span>
+              <span class="chip-title" id="sidebar-hostname">Checking host...</span>
+            </div>
+            <div class="chip-uuid mono" id="sidebar-uuid" onclick="copyMachineId()" title="Click to copy Machine ID">
+              <span id="sidebar-uuid-text">—</span>
+              <i class="bi bi-copy copy-ico"></i>
+            </div>
+          </div>
+
+          <!-- Navigation Links -->
+          <nav class="sidebar-nav">
+            <button class="nav-item active" onclick="switchTab('overview', this)">
+              <i class="bi bi-grid-1x2-fill nav-ico"></i>
+              <span>Dashboard</span>
+            </button>
+            <button class="nav-item" onclick="switchTab('adapters', this)" id="nav-tab-adapters">
+              <i class="bi bi-diagram-3-fill nav-ico"></i>
+              <span>Network Adapters</span>
+              <span class="nav-counter" id="nav-adapter-count">0</span>
+            </button>
+            <button class="nav-item" onclick="switchTab('logs', this)">
+              <i class="bi bi-terminal-fill nav-ico"></i>
+              <span>Activity Log</span>
+            </button>
+            <button class="nav-item" onclick="switchTab('updates', this)" id="nav-tab-updates">
+              <i class="bi bi-cloud-arrow-down-fill nav-ico"></i>
+              <span>Updates</span>
+              <span class="nav-counter" id="nav-update-badge" style="display:none;background:var(--accent);color:#060907;font-weight:800;">NEW</span>
+            </button>
+            <button class="nav-item" onclick="switchTab('settings', this)">
+              <i class="bi bi-sliders2 nav-ico"></i>
+              <span>Settings</span>
+            </button>
+          </nav>
+
+          <!-- Sidebar Footer Status -->
+          <div class="sidebar-footer">
+            <div class="footer-meta">
+              <div class="footer-label">Control Plane</div>
+              <div class="footer-val text-truncate" id="sidebar-server-url">http://proxy.test</div>
+            </div>
+            <div class="approval-badge-pill" id="sidebar-approval-pill">
+              <i class="bi bi-shield-check"></i> <span id="sidebar-approval-text">Approved</span>
+            </div>
+          </div>
+        </aside>
+
+        <!-- ─── Main Content Canvas ───────────────────────────────── -->
+        <div class="content-wrapper">
+          <!-- Top App Bar -->
+          <header class="app-header">
+            <div class="header-left">
+              <h1 class="page-title" id="page-title">Dashboard</h1>
+              <div class="header-subtext" id="page-subtext">Real-time node telemetry & connection status</div>
+            </div>
+
+            <div class="header-actions">
+              <!-- Quick Theme Toggle Button -->
+              <button class="btn-icon-square" onclick="toggleTheme()" id="theme-toggle-btn" title="Toggle Light / Dark Mode">
+                <i class="bi bi-moon-stars-fill" id="theme-btn-icon"></i>
+              </button>
+
+              <button class="btn-cta-primary" onclick="testAllAdaptersInternet()" id="btn-global-test">
+                <i class="bi bi-lightning-charge-fill"></i>
+                <span>Test All Internet</span>
+              </button>
+              <button class="btn-ghost-action" onclick="syncAdapters()" title="Sync all interfaces to server">
+                <i class="bi bi-arrow-repeat"></i>
+                <span>Sync Server</span>
+              </button>
+              <button class="btn-ghost-action" onclick="sendHeartbeat()" title="Send heartbeat pulse">
+                <i class="bi bi-activity"></i>
+                <span>Heartbeat</span>
+              </button>
+            </div>
+          </header>
+
+          <!-- Dynamic Views -->
+          <div class="view-viewport">
+            <!-- ════════ VIEW 1: OVERVIEW / DASHBOARD ════════ -->
+            <div id="view-overview" class="tab-view active">
+
+              <!-- Hero Stats Banner -->
+              <div class="hero-stats-banner">
+                <div class="hero-stat-cell">
+                  <div class="hero-ring-wrap">
+                    <svg class="hero-ring" viewBox="0 0 80 80">
+                      <circle cx="40" cy="40" r="34" fill="none" stroke="var(--border-subtle)" stroke-width="5"/>
+                      <circle cx="40" cy="40" r="34" fill="none" stroke="var(--accent)" stroke-width="5"
+                              stroke-dasharray="213.6" stroke-dashoffset="213.6" stroke-linecap="round"
+                              id="dash-ring-fill" style="transition: stroke-dashoffset 0.8s var(--ease-out);"/>
+                    </svg>
+                    <div class="hero-ring-value" id="dash-verified-count">0</div>
+                  </div>
+                  <div class="hero-stat-info">
+                    <div class="hero-stat-label">Verified Interfaces</div>
+                    <div class="hero-stat-sub" id="dash-verified-sub">of 0 total</div>
+                  </div>
+                </div>
+
+                <div class="hero-divider"></div>
+
+                <div class="hero-stat-cell">
+                  <div class="hero-stat-icon"><i class="bi bi-globe2"></i></div>
+                  <div class="hero-stat-info">
+                    <div class="hero-stat-label">Primary Public IP</div>
+                    <div class="hero-stat-value mono" id="dash-public-ip">Detecting...</div>
+                    <div class="hero-stat-sub" id="dash-ping-sub">Latency: — ms</div>
+                  </div>
+                </div>
+
+                <div class="hero-divider"></div>
+
+                <div class="hero-stat-cell">
+                  <div class="hero-stat-icon shield" id="dash-approval-icon"><i class="bi bi-shield-fill-check"></i></div>
+                  <div class="hero-stat-info">
+                    <div class="hero-stat-label">Node Status</div>
+                    <div class="hero-stat-value" id="dash-approval-val">Pending</div>
+                    <div class="hero-stat-sub" id="dash-approval-sub">Traffic routing authorized</div>
+                  </div>
+                </div>
+
+                <div class="hero-divider"></div>
+
+                <div class="hero-stat-cell">
+                  <div class="hero-stat-icon cmd"><i class="bi bi-cpu-fill"></i></div>
+                  <div class="hero-stat-info">
+                    <div class="hero-stat-label">Remote Commands</div>
+                    <div class="hero-stat-value"><span id="dash-cmd-count">0</span> <span class="hero-stat-unit">queued</span></div>
+                    <div class="hero-stat-sub" id="dash-last-ping">Heartbeat: Active</div>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Hidden progress bar kept for backward compat -->
+              <div style="display:none;">
+                <div id="dash-verified-bar" style="width:0%;"></div>
+              </div>
+
+              <!-- Two-Column Overview Section -->
+              <div class="overview-grid">
+                <!-- System Specs Tile -->
+                <div class="content-card">
+                  <div class="card-head">
+                    <div class="card-title"><i class="bi bi-laptop me-2 text-accent"></i>System Telemetry</div>
+                    <button class="btn-xs-action" onclick="refreshAdapters()"><i class="bi bi-arrow-clockwise"></i> Rescan</button>
+                  </div>
+                  <div class="card-body-padded">
+                    <div class="spec-row">
+                      <span class="spec-label"><i class="bi bi-pc-display me-2"></i>Operating System</span>
+                      <span class="spec-val" id="dash-os">—</span>
+                    </div>
+                    <div class="spec-row">
+                      <span class="spec-label"><i class="bi bi-hdd-rack me-2"></i>Machine Hostname</span>
+                      <span class="spec-val" id="dash-hostname">—</span>
+                    </div>
+                    <div class="spec-row">
+                      <span class="spec-label"><i class="bi bi-robot me-2"></i>Agent Daemon</span>
+                      <span class="spec-val mono">v1.0.0 (Native Release)</span>
+                    </div>
+                    <div class="spec-row">
+                      <span class="spec-label"><i class="bi bi-fingerprint me-2"></i>Machine UUID</span>
+                      <span class="spec-val mono" id="dash-uuid" style="font-size:11px;">—</span>
+                    </div>
+                  </div>
+                </div>
+
+                <!-- Active Network Gateway Preview -->
+                <div class="content-card">
+                  <div class="card-head">
+                    <div class="card-title"><i class="bi bi-router me-2 text-accent"></i>Active Network Gateways</div>
+                    <button class="btn-xs-action" onclick="switchTab('adapters', document.getElementById('nav-tab-adapters'))">View All →</button>
+                  </div>
+                  <div class="card-body-padded" id="dash-quick-adapters">
+                    <div class="empty-state-mini">
+                      <i class="bi bi-hdd-network"></i>
+                      <span>Scanning hardware adapters...</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- ════════ VIEW 2: NETWORK ADAPTERS HUB ════════ -->
+            <div id="view-adapters" class="tab-view">
+              <!-- Toolbar & Filters -->
+              <div class="toolbar-bar">
+                <div class="filter-group">
+                  <button class="filter-tab active" onclick="filterAdapters('all', this)">All Interfaces (<span id="count-all">0</span>)</button>
+                  <button class="filter-tab" onclick="filterAdapters('online', this)"><i class="bi bi-check-circle-fill text-success me-1"></i>Internet Active (<span id="count-online">0</span>)</button>
+                  <button class="filter-tab" onclick="filterAdapters('offline', this)"><i class="bi bi-x-circle-fill text-danger me-1"></i>Local Only (<span id="count-offline">0</span>)</button>
+                </div>
+
+                <div class="toolbar-right">
+                  <label class="custom-toggle" title="Show virtual interfaces (Apple utun/bridge tunnels)">
+                    <input type="checkbox" id="toggle-virtual" onchange="refreshAdapters()" />
+                    <span class="toggle-slider"></span>
+                    <span class="toggle-label">Show Virtual Tunnels</span>
+                  </label>
+
+                  <button class="btn-ghost-sm" onclick="refreshAdapters()" title="Refresh hardware interfaces">
+                    <i class="bi bi-arrow-clockwise"></i> Rescan
+                  </button>
+                </div>
+              </div>
+
+              <!-- Adapters List -->
+              <div class="adapters-container" id="adapters-list">
+                <div class="empty-state-card">
+                  <i class="bi bi-search"></i>
+                  <div class="empty-title">Scanning hardware interfaces...</div>
+                  <div class="empty-sub">Querying local network adapters and USB modems</div>
+                </div>
+              </div>
+            </div>
+
+            <!-- ════════ VIEW 3: ACTIVITY LOGS ════════ -->
+            <div id="view-logs" class="tab-view">
+              <div class="log-viewport-card">
+                <div class="log-toolbar">
+                  <div class="log-title">
+                    <i class="bi bi-terminal-fill me-2 text-accent"></i>Live Activity Console
+                  </div>
+                  <div class="log-controls">
+                    <button class="btn-log-action" onclick="copyLog()"><i class="bi bi-clipboard me-1"></i>Copy</button>
+                    <button class="btn-log-action" onclick="clearLog()"><i class="bi bi-trash3 me-1"></i>Clear</button>
+                  </div>
+                </div>
+                <div class="console-body" id="log"></div>
+              </div>
+            </div>
+
+            <!-- ════════ VIEW 4: UPDATES ════════ -->
+            <div id="view-updates" class="tab-view">
+              <div class="settings-card">
+                <div class="settings-header">
+                  <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;">
+                    <div>
+                      <h3><i class="bi bi-cloud-arrow-down-fill me-2 text-accent"></i>Software Updates</h3>
+                      <p>Automated OTA updates, release verification, and daemon runtime updates</p>
+                    </div>
+                    <button class="btn-primary-glow" onclick="checkForUpdates()" id="btn-check-updates" style="width:auto;padding:8px 18px;font-size:13px;">
+                      <i class="bi bi-arrow-repeat me-1" id="update-check-ico"></i>
+                      <span id="update-check-btn-text">Check for Updates</span>
+                    </button>
+                  </div>
+                </div>
+
+                <!-- Current Version Hero Card -->
+                <div style="background:var(--bg-surface-solid);border:1px solid var(--border-card);border-radius:var(--radius-md);padding:20px;margin-bottom:20px;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:16px;">
+                  <div style="display:flex;align-items:center;gap:14px;">
+                    <div style="width:48px;height:48px;border-radius:12px;background:var(--accent-glow);color:var(--accent);display:flex;align-items:center;justify-content:center;font-size:22px;border:1px solid rgba(var(--accent-rgb),0.2);">
+                      <i class="bi bi-box-seam"></i>
+                    </div>
+                    <div>
+                      <div style="font-size:16px;font-weight:800;color:var(--text-primary);letter-spacing:-0.3px;">
+                        ProxyPK Node Agent <span id="app-current-version" class="mono" style="color:var(--accent);">v1.0.0</span>
+                      </div>
+                      <div style="font-size:12px;color:var(--text-muted);margin-top:2px;" id="update-status-desc">
+                        Your desktop agent is running the latest verified release.
+                      </div>
+                    </div>
+                  </div>
+                  <div id="update-status-pill" class="approval-badge-pill approved">
+                    <i class="bi bi-patch-check-fill"></i> <span id="update-status-pill-text">Up to date</span>
+                  </div>
+                </div>
+
+                <!-- Available Update Banner (Dynamic) -->
+                <div id="update-available-card" style="display:none;background:linear-gradient(135deg, rgba(var(--accent-rgb),0.08) 0%, rgba(var(--accent-rgb),0.02) 100%);border:1px solid var(--accent);border-radius:var(--radius-md);padding:22px;margin-bottom:20px;">
+                  <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;margin-bottom:14px;">
+                    <div style="display:flex;align-items:center;gap:10px;">
+                      <div style="width:36px;height:36px;border-radius:8px;background:var(--accent);color:#060907;display:flex;align-items:center;justify-content:center;font-size:18px;">
+                        <i class="bi bi-stars"></i>
+                      </div>
+                      <div>
+                        <div style="font-size:15px;font-weight:800;color:var(--text-primary);">
+                          New Update Available: <span id="update-target-version" class="mono" style="color:var(--accent);">v1.0.1</span>
+                        </div>
+                        <div style="font-size:11.5px;color:var(--text-muted);" id="update-release-date">
+                          Published on GitHub Releases
+                        </div>
+                      </div>
+                    </div>
+                    <button class="btn-primary-glow" onclick="downloadAndInstallUpdate()" id="btn-install-update" style="width:auto;padding:9px 22px;font-size:13px;background:var(--accent);color:#060907;font-weight:700;">
+                      <i class="bi bi-download me-1"></i> Download & Restart Agent
+                    </button>
+                  </div>
+
+                  <!-- Release Notes -->
+                  <div style="background:var(--bg-app);border:1px solid var(--border-subtle);border-radius:8px;padding:14px;font-size:12.5px;color:var(--text-secondary);max-height:160px;overflow-y:auto;line-height:1.6;" id="update-release-body">
+                    Loading release notes...
+                  </div>
+
+                  <!-- Download Progress Bar -->
+                  <div id="update-progress-container" style="display:none;margin-top:16px;">
+                    <div style="display:flex;justify-content:space-between;font-size:11.5px;margin-bottom:6px;">
+                      <span style="color:var(--text-primary);font-weight:600;" id="update-progress-label">Downloading update payload...</span>
+                      <span class="mono" style="color:var(--accent);" id="update-progress-pct">0%</span>
+                    </div>
+                    <div style="width:100%;height:6px;background:var(--border-subtle);border-radius:4px;overflow:hidden;">
+                      <div id="update-progress-bar" style="width:0%;height:100%;background:var(--accent);transition:width 0.3s ease;"></div>
+                    </div>
+                  </div>
+                </div>
+
+                <!-- Update Channel & Config Info -->
+                <div style="background:var(--bg-surface);border:1px solid var(--border-card);border-radius:var(--radius-md);padding:18px;">
+                  <h6 style="font-size:13px;font-weight:700;color:var(--text-primary);margin-bottom:10px;">
+                    <i class="bi bi-shield-check text-accent me-1"></i>Secure OTA Update Architecture
+                  </h6>
+                  <ul style="font-size:12px;color:var(--text-secondary);margin:0;padding-left:18px;line-height:1.7;">
+                    <li>Official binaries are cryptographically signed with Minisign & Ed25519 keys.</li>
+                    <li>Update payloads are fetched directly from <code class="mono" style="color:var(--accent);">https://github.com/devzoic/proxypk/releases</code>.</li>
+                    <li>Automatic fallback preserves running proxy processes until the update is ready to switch over.</li>
+                  </ul>
+                </div>
+              </div>
+            </div>
+
+            <!-- ════════ VIEW 5: SETTINGS ════════ -->
+            <div id="view-settings" class="tab-view">
+              <div class="settings-card">
+                <div class="settings-header">
+                  <h3><i class="bi bi-sliders2 me-2 text-accent"></i>Agent Configuration</h3>
+                  <p>Configure daemon parameters, theme appearance, and server endpoint connections</p>
+                </div>
+
+                <form onsubmit="event.preventDefault(); saveSettings();" class="settings-form">
+                  <!-- Appearance / Theme Selector -->
+                  <div class="form-row">
+                    <label>Interface Theme Mode</label>
+                    <div class="theme-options-grid">
+                      <div class="theme-option" id="theme-opt-dark" onclick="selectThemeSetting('dark')">
+                        <i class="bi bi-moon-stars-fill theme-opt-icon"></i>
+                        <div class="theme-opt-title">Dark Mode</div>
+                        <div class="theme-opt-desc">Deep obsidian acrylic</div>
+                      </div>
+                      <div class="theme-option" id="theme-opt-light" onclick="selectThemeSetting('light')">
+                        <i class="bi bi-sun-fill theme-opt-icon"></i>
+                        <div class="theme-opt-title">Light Mode</div>
+                        <div class="theme-opt-desc">Crisp high-contrast</div>
+                      </div>
+                      <div class="theme-option" id="theme-opt-system" onclick="selectThemeSetting('system')">
+                        <i class="bi bi-display theme-opt-icon"></i>
+                        <div class="theme-opt-title">System Match</div>
+                        <div class="theme-opt-desc">Auto-sync with OS</div>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div class="form-row">
+                    <label>ProxyPK Server Endpoint URL</label>
+                    <div style="display:flex;gap:8px;margin-bottom:8px;">
+                      <button type="button" class="btn-action-outline btn-action-sm" onclick="setEndpointPreset('http://proxy.test')" style="font-size:11px;padding:4px 10px;">
+                        <i class="bi bi-laptop me-1"></i> Local Dev (proxy.test)
+                      </button>
+                      <button type="button" class="btn-action-outline btn-action-sm" onclick="setEndpointPreset('https://proxy.devzoic.com')" style="font-size:11px;padding:4px 10px;">
+                        <i class="bi bi-cloud-check me-1"></i> Live Cloud (proxy.devzoic.com)
+                      </button>
+                    </div>
+                    <input type="url" id="setting-server-url" class="form-input-lg" value="http://proxy.test" required />
+                    <span class="form-hint">The master Laravel control plane API address (defaults to proxy.test in dev or proxy.devzoic.com in live)</span>
+                  </div>
+
+                  <div class="form-row">
+                    <label>Node Hardware Identifier (Machine UUID)</label>
+                    <input type="text" id="setting-machine-id" class="form-input-lg mono" readonly />
+                    <span class="form-hint">Unique fingerprint for this physical machine</span>
+                  </div>
+
+                  <div class="form-row">
+                    <label>Heartbeat Telemetry Frequency</label>
+                    <select id="setting-hb-freq" class="form-input-lg">
+                      <option value="30000">Every 30 seconds</option>
+                      <option value="60000" selected>Every 60 seconds (Standard)</option>
+                      <option value="120000">Every 2 minutes</option>
+                    </select>
+                  </div>
+
+                  <div class="settings-actions">
+                    <button type="submit" class="btn-primary-glow" style="width:auto;padding:12px 28px;">
+                      <i class="bi bi-check2-circle me-1"></i> Save & Reconnect
+                    </button>
+                  </div>
+                </form>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ─── Core Application Logic ──────────────────────────────── -->
+  <script>
+    const { invoke } = window.__TAURI__.core;
+
+    let heartbeatInterval = null;
+    let commandPollInterval = null;
+    let cachedAdapters = [];
+    let currentFilter = 'all';
+
+    // ─── Theme Management with Persistence ───────────────────
+    function initThemeUI() {
+      const saved = localStorage.getItem('proxypk_theme') || 'dark';
+      updateThemeButtons(saved);
+    }
+
+    function updateThemeButtons(theme) {
+      const currentActiveTheme = document.documentElement.getAttribute('data-theme') || 'dark';
+      const iconEl = document.getElementById('theme-btn-icon');
+      if (iconEl) {
+        iconEl.className = currentActiveTheme === 'light' ? 'bi bi-sun-fill' : 'bi bi-moon-stars-fill';
+      }
+
+      // Update settings view options
+      document.querySelectorAll('.theme-option').forEach(el => el.classList.remove('active'));
+      const activeOpt = document.getElementById('theme-opt-' + theme);
+      if (activeOpt) activeOpt.classList.add('active');
+    }
+
+    function selectThemeSetting(theme) {
+      localStorage.setItem('proxypk_theme', theme);
+      if (theme === 'system') {
+        const isDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+        document.documentElement.setAttribute('data-theme', isDark ? 'dark' : 'light');
+      } else {
+        document.documentElement.setAttribute('data-theme', theme);
+      }
+      updateThemeButtons(theme);
+      log(`Theme changed to ${theme.toUpperCase()}`, 'info');
+    }
+
+    function toggleTheme() {
+      const current = document.documentElement.getAttribute('data-theme') || 'dark';
+      const next = current === 'dark' ? 'light' : 'dark';
+      selectThemeSetting(next);
+    }
+
+    // Listen for OS system theme changes if set to system
+    window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', (e) => {
+      const saved = localStorage.getItem('proxypk_theme');
+      if (saved === 'system') {
+        document.documentElement.setAttribute('data-theme', e.matches ? 'dark' : 'light');
+        updateThemeButtons('system');
+      }
+    });
+
+    // ─── Sidebar Navigation ──────────────────────────────────
+    function switchTab(tabName, btnEl) {
+      document.querySelectorAll('.sidebar-nav .nav-item').forEach(el => el.classList.remove('active'));
+      if (btnEl) btnEl.classList.add('active');
+
+      document.querySelectorAll('.tab-view').forEach(el => el.classList.remove('active'));
+      const activeView = document.getElementById('view-' + tabName);
+      if (activeView) activeView.classList.add('active');
+
+      const titles = {
+        'overview': { title: 'Dashboard', sub: 'Real-time node telemetry & connection status' },
+        'adapters': { title: 'Network Adapters', sub: 'Inspect hardware interfaces & verify public internet routes' },
+        'logs': { title: 'Activity Logs', sub: 'Live streaming event daemon console' },
+        'updates': { title: 'Software Updates', sub: 'Automated OTA updates, release verification, and daemon runtime updates' },
+        'settings': { title: 'Agent Settings', sub: 'Daemon configurations & server endpoint parameters' }
+      };
+
+      if (titles[tabName]) {
+        document.getElementById('page-title').textContent = titles[tabName].title;
+        document.getElementById('page-subtext').textContent = titles[tabName].sub;
+      }
+    }
+
+    function setEndpointPreset(url) {
+      document.getElementById('setting-server-url').value = url;
+      localStorage.setItem('proxypk_server_url', url);
+      log(`Endpoint preset selected: ${url}`, 'info');
+    }
+
+    function getResolvedServerUrl() {
+      const saved = localStorage.getItem('proxypk_server_url');
+      if (saved) return saved;
+      return 'http://proxy.test';
+    }
+
+    function log(msg, type = 'info') {
+      const el = document.getElementById('log');
+      if (!el) return;
+      const time = new Date().toLocaleTimeString();
+      const cls = type === 'error' ? 'log-error' : type === 'success' ? 'log-success' : type === 'warn' ? 'log-warn' : 'log-info';
+      const prefix = type === 'error' ? '[ERR]' : type === 'success' ? '[OK]' : type === 'warn' ? '[WARN]' : '[SYS]';
+      el.innerHTML = `<div class="log-line ${cls}"><span class="log-ts">${time}</span> <span class="log-tag">${prefix}</span> <span class="log-msg">${msg}</span></div>` + el.innerHTML;
+    }
+
+    function clearLog() {
+      const el = document.getElementById('log');
+      if (el) el.innerHTML = `<div class="log-line log-info"><span class="log-ts">${new Date().toLocaleTimeString()}</span> <span class="log-tag">[SYS]</span> Activity log console cleared</div>`;
+    }
+
+    function copyLog() {
+      const text = document.getElementById('log')?.innerText || '';
+      navigator.clipboard.writeText(text);
+      log('Activity log copied to clipboard', 'success');
+    }
+
+    function copyMachineId() {
+      const fullId = document.getElementById('sidebar-uuid')?.dataset?.fullId || document.getElementById('sidebar-uuid-text')?.textContent || '';
+      navigator.clipboard.writeText(fullId);
+      log('Machine UUID copied to clipboard: ' + fullId, 'success');
+    }
+
+    async function saveSettings() {
+      const newUrl = document.getElementById('setting-server-url').value;
+      localStorage.setItem('proxypk_server_url', newUrl);
+      log('Saving endpoint and reconnecting to ' + newUrl, 'warn');
+      await connectToServer(newUrl);
+      switchTab('overview', document.querySelector('.sidebar-nav .nav-item'));
+    }
+
+    async function connectToServer(customUrl = null) {
+      const url = customUrl || document.getElementById('setting-server-url')?.value || getResolvedServerUrl();
+      log(`Connecting to control plane: ${url}...`, 'info');
+
+      try {
+        const state = await invoke('connect_to_server', { serverUrl: url });
+
+        // Sidebar Info
+        document.getElementById('sidebar-hostname').textContent = state.hostname;
+        const uuidShort = state.machine_id.slice(0, 14) + '...';
+        document.getElementById('sidebar-uuid-text').textContent = uuidShort;
+        document.getElementById('sidebar-uuid').dataset.fullId = state.machine_id;
+        document.getElementById('sidebar-server-url').textContent = url;
+
+        // Settings inputs
+        if (document.getElementById('setting-server-url')) document.getElementById('setting-server-url').value = url;
+        if (document.getElementById('setting-machine-id')) document.getElementById('setting-machine-id').value = state.machine_id;
+
+        // Dashboard overview stats
+        if (document.getElementById('dash-hostname')) document.getElementById('dash-hostname').textContent = state.hostname;
+        if (document.getElementById('dash-os')) document.getElementById('dash-os').textContent = state.os_type === 'mac' ? 'macOS (Darwin)' : state.os_type.toUpperCase();
+        if (document.getElementById('dash-uuid')) document.getElementById('dash-uuid').textContent = state.machine_id;
+
+        updateApprovalUI(state.approved);
+        initThemeUI();
+        log('Node agent connected and registered successfully', 'success');
+
+        await refreshAdapters();
+        testAllAdaptersInternet();
+        startIntervals();
+        loadAppVersion();
+        checkForUpdates(true); // silent background check
+      } catch (e) {
+        log(`Connection to ${url} failed: ${e}`, 'warn');
+        // If local dev endpoint failed and user hasn't explicitly set a custom URL, auto fallback to live
+        if (url === 'http://proxy.test' && !localStorage.getItem('proxypk_server_url')) {
+          log('Attempting fallback to live cloud endpoint: https://proxy.devzoic.com...', 'info');
+          try {
+            await connectToServer('https://proxy.devzoic.com');
+          } catch (err2) {
+            log(`Live cloud connection error: ${err2}`, 'error');
+          }
+        }
+      }
+    }
+
+    // ─── Updates Management ──────────────────────────────────
+    async function loadAppVersion() {
+      try {
+        const ver = await invoke('get_app_version');
+        if (ver) {
+          const el = document.getElementById('app-current-version');
+          if (el) el.textContent = 'v' + ver;
+        }
+      } catch (e) {}
+    }
+
+    async function checkForUpdates(silent = false) {
+      const btn = document.getElementById('btn-check-updates');
+      const ico = document.getElementById('update-check-ico');
+      const txt = document.getElementById('update-check-btn-text');
+
+      if (!silent && btn) {
+        btn.disabled = true;
+        if (ico) ico.className = 'spinner-small me-1';
+        if (txt) txt.textContent = 'Checking...';
+      }
+
+      try {
+        const res = await invoke('check_for_updates');
+        if (res.current_version) {
+          const el = document.getElementById('app-current-version');
+          if (el) el.textContent = 'v' + res.current_version;
+        }
+
+        if (res.available && res.version) {
+          document.getElementById('update-available-card').style.display = 'block';
+          document.getElementById('update-target-version').textContent = 'v' + res.version;
+          document.getElementById('update-release-date').textContent = res.date ? 'Released ' + new Date(res.date).toLocaleDateString() : 'New GitHub Release';
+          document.getElementById('update-release-body').textContent = res.body || 'Performance improvements, security enhancements, and stability updates.';
+
+          const pill = document.getElementById('update-status-pill');
+          if (pill) {
+            pill.className = 'approval-badge-pill pending';
+            pill.innerHTML = '<i class="bi bi-arrow-up-circle-fill"></i> <span>Update v' + res.version + ' Available</span>';
+          }
+          const desc = document.getElementById('update-status-desc');
+          if (desc) desc.textContent = 'A new official release is ready for installation.';
+          const badge = document.getElementById('nav-update-badge');
+          if (badge) badge.style.display = 'inline-block';
+
+          if (!silent) log(`🎉 Update Available: Version ${res.version} is ready to install`, 'success');
+        } else {
+          document.getElementById('update-available-card').style.display = 'none';
+          const pill = document.getElementById('update-status-pill');
+          if (pill) {
+            pill.className = 'approval-badge-pill approved';
+            pill.innerHTML = '<i class="bi bi-patch-check-fill"></i> <span>Up to date</span>';
+          }
+          const desc = document.getElementById('update-status-desc');
+          if (desc) desc.textContent = 'Your desktop agent is running the latest verified release.';
+          const badge = document.getElementById('nav-update-badge');
+          if (badge) badge.style.display = 'none';
+
+          if (!silent) log('You are running the latest version of ProxyPK Agent.', 'info');
+        }
+      } catch (e) {
+        if (!silent) log(`Update check notice: ${e}`, 'warn');
+      } finally {
+        if (!silent && btn) {
+          btn.disabled = false;
+          if (ico) ico.className = 'bi bi-arrow-repeat me-1';
+          if (txt) txt.textContent = 'Check for Updates';
+        }
+      }
+    }
+
+    async function downloadAndInstallUpdate() {
+      const btn = document.getElementById('btn-install-update');
+      const prog = document.getElementById('update-progress-container');
+      const bar = document.getElementById('update-progress-bar');
+      const pct = document.getElementById('update-progress-pct');
+
+      if (btn) btn.disabled = true;
+      if (prog) prog.style.display = 'block';
+
+      let sim = 10;
+      const progressTimer = setInterval(() => {
+        if (sim < 90) {
+          sim += 15;
+          if (bar) bar.style.width = sim + '%';
+          if (pct) pct.textContent = sim + '%';
+        }
+      }, 350);
+
+      log('⬇️ Downloading update payload from GitHub releases...', 'info');
+
+      try {
+        const res = await invoke('install_update');
+        clearInterval(progressTimer);
+        if (bar) bar.style.width = '100%';
+        if (pct) pct.textContent = '100%';
+        log(`✅ ${res}`, 'success');
+      } catch (e) {
+        clearInterval(progressTimer);
+        if (prog) prog.style.display = 'none';
+        if (btn) btn.disabled = false;
+        log(`Update installation error: ${e}`, 'error');
+      }
+    }
+
+    function updateApprovalUI(isApproved) {
+      const sideText = document.getElementById('sidebar-approval-text');
+      const sidePill = document.getElementById('sidebar-approval-pill');
+      const dashVal = document.getElementById('dash-approval-val');
+      const dashSub = document.getElementById('dash-approval-sub');
+      const dashIcon = document.getElementById('dash-approval-icon');
+
+      if (isApproved) {
+        sidePill.className = 'approval-badge-pill approved';
+        sideText.textContent = 'Approved';
+        dashVal.innerHTML = '<span class="text-success"><i class="bi bi-patch-check-fill me-1"></i>Approved</span>';
+        dashSub.textContent = 'Traffic routing authorized';
+        if (dashIcon) {
+          dashIcon.className = 'hero-stat-icon shield';
+          dashIcon.innerHTML = '<i class="bi bi-shield-fill-check"></i>';
+        }
+      } else {
+        sidePill.className = 'approval-badge-pill pending';
+        sideText.textContent = 'Pending Approval';
+        dashVal.innerHTML = '<span class="text-warning"><i class="bi bi-clock-history me-1"></i>Pending</span>';
+        dashSub.textContent = 'Awaiting admin authorization';
+        if (dashIcon) {
+          dashIcon.className = 'hero-stat-icon shield pending';
+          dashIcon.innerHTML = '<i class="bi bi-shield-fill-exclamation"></i>';
+        }
+      }
+    }
+
+    async function sendHeartbeat() {
+      try {
+        const state = await invoke('send_heartbeat');
+        updateApprovalUI(state.approved);
+        document.getElementById('dash-cmd-count').textContent = state.pending_commands;
+        document.getElementById('dash-last-ping').textContent = 'Last: ' + new Date().toLocaleTimeString();
+        log('Heartbeat dispatched to control plane (Pending Tasks: ' + state.pending_commands + ')', 'success');
+      } catch (e) {
+        log('Heartbeat failed: ' + e, 'error');
+      }
+    }
+
+    async function refreshAdapters() {
+      try {
+        const includeVirtual = document.getElementById('toggle-virtual').checked;
+        cachedAdapters = await invoke('detect_adapters', { includeVirtual });
+        renderAdapters();
+        log(`Scanned network hardware: found ${cachedAdapters.length} adapter interface(s)`);
+      } catch (e) {
+        log('Hardware scan failed: ' + e, 'error');
+      }
+    }
+
+    function filterAdapters(type, btnEl) {
+      currentFilter = type;
+      document.querySelectorAll('.filter-tab').forEach(el => el.classList.remove('active'));
+      if (btnEl) btnEl.classList.add('active');
+      renderAdapters();
+    }
+
+    function renderAdapters() {
+      const list = document.getElementById('adapters-list');
+      const quickList = document.getElementById('dash-quick-adapters');
+      const navCount = document.getElementById('nav-adapter-count');
+
+      if (!cachedAdapters || cachedAdapters.length === 0) {
+        list.innerHTML = `
+          <div class="empty-state-card">
+            <i class="bi bi-hdd-network"></i>
+            <div class="empty-title">No network hardware adapters detected</div>
+            <div class="empty-sub">Plug in a Wi-Fi, Ethernet, or USB LTE dongle to start routing</div>
+          </div>`;
+        if (quickList) quickList.innerHTML = `<div class="empty-state-mini"><i class="bi bi-exclamation-circle"></i> No adapters</div>`;
+        updateCounts(0, 0, 0);
+        updateHeroRing(0, 0);
+        return;
+      }
+
+      let onlineCount = 0;
+      let offlineCount = 0;
+      let primaryExtIp = null;
+      let primaryPing = null;
+
+      cachedAdapters.forEach(a => {
+        if (a.has_internet === true) {
+          onlineCount++;
+          if (!primaryExtIp && a.external_ip) {
+            primaryExtIp = a.external_ip;
+            primaryPing = a.ping_ms;
+          }
+        } else if (a.has_internet === false) {
+          offlineCount++;
+        }
+      });
+
+      navCount.textContent = cachedAdapters.length;
+      updateCounts(cachedAdapters.length, onlineCount, offlineCount);
+
+      // Update Dashboard Hero
+      document.getElementById('dash-verified-count').textContent = onlineCount;
+      document.getElementById('dash-verified-sub').textContent = `of ${cachedAdapters.length} total`;
+      updateHeroRing(onlineCount, cachedAdapters.length);
+
+      if (primaryExtIp) {
+        document.getElementById('dash-public-ip').textContent = primaryExtIp;
+        document.getElementById('dash-ping-sub').textContent = `Verified Route Latency: ${primaryPing || 0} ms`;
+      } else {
+        document.getElementById('dash-public-ip').textContent = 'No Public Route';
+        document.getElementById('dash-ping-sub').textContent = 'Run connectivity test';
+      }
+
+      // Render Quick Preview on Dashboard
+      if (quickList) {
+        quickList.innerHTML = cachedAdapters.slice(0, 3).map(a => `
+          <div class="quick-adapter-row">
+            <div class="qa-left">
+              <i class="bi ${a.adapter_type === 'wifi' ? 'bi-wifi' : a.adapter_type === 'wingle' || a.adapter_type === 'cellular' ? 'bi-broadcast-pin' : 'bi-ethernet'} qa-icon"></i>
+              <div>
+                <div class="qa-name">${a.display_name || a.adapter_name}</div>
+                <div class="qa-ip mono">${a.local_ip || 'No IP'}</div>
+              </div>
+            </div>
+            <div class="qa-right">
+              ${a.has_internet === true ? `<span class="qa-badge online"><i class="bi bi-check2"></i> ${a.external_ip || 'Online'}</span>` : `<span class="qa-badge offline">Local</span>`}
+            </div>
+          </div>
+        `).join('');
+      }
+
+      // Filter for Network Adapters View
+      const filtered = cachedAdapters.filter(a => {
+        if (currentFilter === 'online') return a.has_internet === true;
+        if (currentFilter === 'offline') return a.has_internet === false;
+        return true;
+      });
+
+      if (filtered.length === 0) {
+        list.innerHTML = `
+          <div class="empty-state-card">
+            <i class="bi bi-funnel"></i>
+            <div class="empty-title">No adapters matching filter "${currentFilter}"</div>
+          </div>`;
+        return;
+      }
+
+      // Render Elegant Row Cards
+      list.innerHTML = filtered.map((a) => {
+        const isWifi = a.adapter_type === 'wifi';
+        const isCell = a.adapter_type === 'wingle' || a.adapter_type === 'cellular';
+        const isVpn = a.adapter_type === 'vpn';
+        const iconClass = isWifi ? 'bi-wifi' : isCell ? 'bi-broadcast-pin' : isVpn ? 'bi-shield-shaded' : 'bi-ethernet';
+        const avatarColor = isWifi ? 'teal' : isCell ? 'purple' : isVpn ? 'amber' : 'green';
+
+        let statusBlock = '';
+        if (a.is_testing) {
+          statusBlock = `
+            <div class="adapter-status-pill testing">
+              <span class="spinner-micro"></span>
+              <span>Testing Route...</span>
+            </div>`;
+        } else if (a.has_internet === true) {
+          statusBlock = `
+            <div class="adapter-status-pill verified">
+              <span class="status-dot-mini green"></span>
+              <div class="status-details">
+                <span class="status-main">Internet Verified</span>
+                <span class="status-ip mono">${a.external_ip || 'Public IP'}</span>
+              </div>
+              ${a.ping_ms ? `<span class="latency-tag">${a.ping_ms} ms</span>` : ''}
+            </div>`;
+        } else if (a.has_internet === false) {
+          statusBlock = `
+            <div class="adapter-status-pill local">
+              <span class="status-dot-mini red"></span>
+              <span class="status-main">Local Only (No Internet)</span>
+            </div>`;
+        } else {
+          statusBlock = `
+            <div class="adapter-status-pill untested">
+              <span class="status-dot-mini gray"></span>
+              <span class="status-main">Untested Route</span>
+            </div>`;
+        }
+
+        return `
+          <div class="adapter-row-card ${a.has_internet === true ? 'is-verified' : ''}">
+            <!-- Column 1: Hardware Identity -->
+            <div class="col-hardware">
+              <div class="hw-avatar ${avatarColor}">
+                <i class="bi ${iconClass}"></i>
+              </div>
+              <div class="hw-meta">
+                <div class="hw-title">${a.display_name || a.adapter_name}</div>
+                <div class="hw-sub">
+                  <span class="type-pill ${avatarColor}">${a.adapter_type.toUpperCase()}</span>
+                  <span class="mac-mono mono">${a.mac_address || 'No MAC'}</span>
+                  ${a.is_virtual ? '<span class="virt-pill">VIRTUAL</span>' : ''}
+                </div>
+              </div>
+            </div>
+
+            <!-- Column 2: Local IP -->
+            <div class="col-local-ip">
+              <span class="col-caption">LOCAL IP</span>
+              <span class="ip-chip mono" onclick="navigator.clipboard.writeText('${a.local_ip || ''}'); log('Copied ${a.local_ip}', 'success');" title="Click to copy">
+                ${a.local_ip || 'Unassigned'}
+                <i class="bi bi-copy copy-mini"></i>
+              </span>
+            </div>
+
+            <!-- Column 3: Internet Telemetry -->
+            <div class="col-telemetry">
+              <span class="col-caption">PUBLIC GATEWAY STATUS</span>
+              ${statusBlock}
+            </div>
+
+            <!-- Column 4: Actions -->
+            <div class="col-actions">
+              <button class="btn-action-test" onclick="testSingleAdapter('${a.adapter_name}')" ${a.is_testing ? 'disabled' : ''} title="Test Public Internet Route">
+                <i class="bi bi-lightning-charge"></i>
+                <span>Test</span>
+              </button>
+              <button class="btn-action-sync" onclick="syncSingleAdapter('${a.adapter_name}')" title="Sync to Server">
+                <i class="bi bi-arrow-repeat"></i>
+              </button>
+            </div>
+          </div>
+        `;
+      }).join('');
+    }
+
+    function updateHeroRing(online, total) {
+      const circumference = 2 * Math.PI * 34; // r=34
+      const pct = total > 0 ? online / total : 0;
+      const offset = circumference - (pct * circumference);
+      const ringEl = document.getElementById('dash-ring-fill');
+      if (ringEl) ringEl.setAttribute('stroke-dashoffset', offset);
+    }
+
+    function updateCounts(all, online, offline) {
+      document.getElementById('count-all').textContent = all;
+      document.getElementById('count-online').textContent = online;
+      document.getElementById('count-offline').textContent = offline;
+    }
+
+    async function testSingleAdapter(adapterName) {
+      const adapter = cachedAdapters.find(a => a.adapter_name === adapterName);
+      if (!adapter || !adapter.local_ip) {
+        log(`Cannot test adapter ${adapterName}: no local IP assigned`, 'warn');
+        return;
+      }
+
+      adapter.is_testing = true;
+      renderAdapters();
+      log(`Testing internet route for ${adapter.display_name || adapter.adapter_name} (${adapter.local_ip})...`);
+
+      try {
+        const result = await invoke('check_adapter_internet', { ip: adapter.local_ip });
+        adapter.has_internet = result.has_internet;
+        adapter.external_ip = result.external_ip;
+        adapter.ping_ms = result.ping_ms;
+        adapter.is_testing = false;
+
+        if (result.has_internet) {
+          log(`Interface ${adapter.adapter_name} verified online: ${result.external_ip} (${result.ping_ms}ms latency)`, 'success');
+        } else {
+          log(`Interface ${adapter.adapter_name} has NO public internet (${result.error || 'No route'})`, 'warn');
+        }
+      } catch (e) {
+        adapter.has_internet = false;
+        adapter.is_testing = false;
+        log(`Test failed for ${adapterName}: ` + e, 'error');
+      }
+
+      renderAdapters();
+    }
+
+    async function testAllAdaptersInternet() {
+      const btn = document.getElementById('btn-global-test');
+      btn.disabled = true;
+      btn.innerHTML = '<span class="spinner-micro"></span> <span>Testing...</span>';
+      log('Running internet connectivity check across all network interfaces...');
+
+      for (const a of cachedAdapters) {
+        if (a.local_ip && !a.local_ip.startsWith('fe80:')) {
+          a.is_testing = true;
+        }
+      }
+      renderAdapters();
+
+      const promises = cachedAdapters.map(async (a) => {
+        if (!a.local_ip || a.local_ip.startsWith('fe80:')) {
+          a.has_internet = false;
+          a.is_testing = false;
+          return;
+        }
+        try {
+          const res = await invoke('check_adapter_internet', { ip: a.local_ip });
+          a.has_internet = res.has_internet;
+          a.external_ip = res.external_ip;
+          a.ping_ms = res.ping_ms;
+        } catch (e) {
+          a.has_internet = false;
+        } finally {
+          a.is_testing = false;
+        }
+      });
+
+      await Promise.all(promises);
+      renderAdapters();
+
+      const onlineCount = cachedAdapters.filter(a => a.has_internet === true).length;
+      log(`Internet check complete: ${onlineCount} of ${cachedAdapters.length} adapter(s) verified online!`, 'success');
+
+      btn.disabled = false;
+      btn.innerHTML = '<i class="bi bi-lightning-charge-fill"></i> <span>Test All Internet</span>';
+
+      await syncAdapters();
+    }
+
+    async function syncAdapters() {
+      try {
+        log('Syncing network adapters and public IP routes to server...');
+        const payload = cachedAdapters.map(a => ({
+          adapter_name: a.adapter_name,
+          adapter_type: a.adapter_type,
+          mac_address: a.mac_address || null,
+          local_ip: a.local_ip || null,
+          external_ip: a.external_ip || null,
+          signal_strength: a.signal_strength || null,
+          connection_speed_mbps: a.connection_speed_mbps || null,
+          status: a.has_internet === true ? 'online' : (a.has_internet === false ? 'offline' : 'online'),
+        }));
+
+        await invoke('sync_adapters', { adapters: payload });
+        log('All network interfaces synced to ProxyPK server', 'success');
+      } catch (e) {
+        log('Sync failed: ' + e, 'error');
+      }
+    }
+
+    async function syncSingleAdapter(adapterName) {
+      await syncAdapters();
+    }
+
+    async function syncAndStartProxies() {
+      try {
+        const state = await invoke('get_agent_state');
+        if (!state.api_token) return;
+
+        const serverUrl = (state.server_url || 'http://proxy.test').replace(/\/$/, '');
+        const res = await fetch(`${serverUrl}/api/desktop/proxy/config?machine_id=${encodeURIComponent(state.machine_id)}`, {
+          headers: {
+            'Authorization': `Bearer ${state.api_token}`,
+            'Accept': 'application/json'
+          }
+        });
+        const data = await res.json();
+        if (data.success && data.proxies) {
+          for (const p of data.proxies) {
+            if (p.status === 'running') {
+              try {
+                const res = await invoke('start_proxy_server', {
+                  proxyId: Number(p.id),
+                  port: Number(p.local_port),
+                  protocol: p.protocol,
+                  username: p.username || null,
+                  password: p.password || null,
+                  adapterIp: p.network_adapter ? p.network_adapter.local_ip : null
+                });
+                log(`🚀 Auto-started Proxy #${p.id} on port :${p.local_port} (${p.protocol.toUpperCase()})`, 'success');
+              } catch (err) {
+                log(`Notice for Proxy #${p.id}: ${err}`, 'info');
+              }
+            }
+          }
+        }
+      } catch (e) {
+        // quiet fallback
+      }
+    }
+
+    async function pollCommands() {
+      try {
+        const cmds = await invoke('poll_commands');
+        document.getElementById('dash-cmd-count').textContent = cmds.length;
+        if (cmds && cmds.length > 0) {
+          log(`Received ${cmds.length} instruction(s) from server`, 'success');
+          for (const cmd of cmds) {
+            await executeServerCommand(cmd);
+          }
+        }
+      } catch (e) {
+        // silent poll error
+      }
+    }
+
+    async function executeServerCommand(cmd) {
+      log(`⚡ Executing instruction #${cmd.id}: ${cmd.command}...`);
+      try {
+        const p = typeof cmd.payload === 'string' ? JSON.parse(cmd.payload) : (cmd.payload || {});
+        if (cmd.command === 'start_proxy') {
+          const res = await invoke('start_proxy_server', {
+            proxyId: Number(p.proxy_id),
+            port: Number(p.port),
+            protocol: p.protocol || 'socks5',
+            username: p.username || null,
+            password: p.password || null,
+            adapterIp: p.adapter_ip || null
+          });
+          log(`🚀 [START_PROXY #${cmd.id}] ${res}`, 'success');
+          await invoke('ack_command', { commandId: cmd.id, success: true, result: { message: res } });
+        } else if (cmd.command === 'stop_proxy') {
+          const res = await invoke('stop_proxy_server', { proxyId: Number(p.proxy_id) });
+          log(`🛑 [STOP_PROXY #${cmd.id}] ${res}`, 'warn');
+          await invoke('ack_command', { commandId: cmd.id, success: true, result: { message: res } });
+        } else if (cmd.command === 'sync_adapters') {
+          await refreshAdapters();
+          await testAllAdaptersInternet();
+          await invoke('ack_command', { commandId: cmd.id, success: true, result: { synced: true } });
+        } else if (cmd.command === 'check_health' || cmd.command === 'ping') {
+          await invoke('ack_command', { commandId: cmd.id, success: true, result: { status: 'ok', time: new Date().toISOString() } });
+        } else {
+          await invoke('ack_command', { commandId: cmd.id, success: true, result: { acknowledged: true } });
+        }
+      } catch (err) {
+        log(`❌ Command #${cmd.id} execution failed: ${err}`, 'error');
+        await invoke('ack_command', { commandId: cmd.id, success: false, result: { error: String(err) } });
+      }
+    }
+
+    let logFlushInterval = null;
+
+    async function flushProxyLogs() {
+      try {
+        const count = await invoke('flush_proxy_logs');
+        if (count > 0) {
+          log(`📊 Shipped ${count} connection traffic log(s) to server`, 'info');
+        }
+      } catch (e) {}
+    }
+
+    function startIntervals() {
+      if (heartbeatInterval) clearInterval(heartbeatInterval);
+      if (commandPollInterval) clearInterval(commandPollInterval);
+      if (logFlushInterval) clearInterval(logFlushInterval);
+
+      pollCommands();
+      syncAndStartProxies();
+
+      heartbeatInterval = setInterval(sendHeartbeat, 60000);
+      commandPollInterval = setInterval(pollCommands, 5000); // 5s poll for instant responsiveness
+      logFlushInterval = setInterval(flushProxyLogs, 4000); // 4s batch ship
+    }
+
+    // Auto-connect on startup
+    window.addEventListener('DOMContentLoaded', async () => {
+      try {
+        await connectToServer();
+      } catch (e) {
+        console.warn('Auto-connect failed:', e);
+      }
+    });
+  </script>
+</body>
+</html>
