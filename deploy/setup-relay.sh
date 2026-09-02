@@ -70,7 +70,11 @@ cat <<EOF > /etc/rathole/server.toml
 bind_addr = "0.0.0.0:${CONTROL_PORT}"
 default_token = "${TOKEN}"
 
-# Ingress services will be automatically registered dynamically
+# Default service for health checking
+[server.services.health]
+token = "${TOKEN}"
+bind_addr = "0.0.0.0:20000"
+type = "tcp"
 EOF
 
 # 4. Create Systemd Service
