@@ -477,8 +477,6 @@ async fn flush_proxy_logs(state: State<'_, AppState>) -> Result<usize, String> {
     Ok(count)
 }
 
-use tauri_plugin_updater::UpdaterExt;
-
 #[derive(serde::Serialize)]
 struct UpdateInfo {
     available: bool,
@@ -486,6 +484,7 @@ struct UpdateInfo {
     current_version: String,
     body: Option<String>,
     date: Option<String>,
+    download_url: Option<String>,
 }
 
 #[tauri::command]
@@ -496,49 +495,85 @@ async fn get_app_version(app: tauri::AppHandle) -> Result<String, String> {
 #[tauri::command]
 async fn check_for_updates(app: tauri::AppHandle) -> Result<UpdateInfo, String> {
     let current_version = app.package_info().version.to_string();
+    let client = reqwest::Client::builder()
+        .user_agent("ProxyPK-Desktop-Agent")
+        .build()
+        .map_err(|e| e.to_string())?;
 
-    match app.updater() {
-        Ok(updater) => match updater.check().await {
-            Ok(Some(update)) => Ok(UpdateInfo {
-                available: true,
-                version: Some(update.version.clone()),
-                current_version,
-                body: update.body.clone(),
-                date: update.date.map(|d| d.to_string()),
-            }),
-            Ok(None) => Ok(UpdateInfo {
-                available: false,
-                version: None,
-                current_version,
-                body: None,
-                date: None,
-            }),
-            Err(e) => Err(format!("Check error: {}", e)),
-        },
-        Err(e) => Err(format!("Updater initialization error: {}", e)),
+    match client
+        .get("https://api.github.com/repos/devzoic/proxypk/releases/latest")
+        .send()
+        .await
+    {
+        Ok(res) => {
+            if res.status().is_success() {
+                if let Ok(json) = res.json::<serde_json::Value>().await {
+                    let tag = json["tag_name"]
+                        .as_str()
+                        .unwrap_or("")
+                        .trim_start_matches('v');
+                    let body = json["body"].as_str().map(|s| s.to_string());
+                    let date = json["published_at"].as_str().map(|s| s.to_string());
+                    let html_url = json["html_url"].as_str().map(|s| s.to_string());
+
+                    let is_newer = !tag.is_empty() && tag != current_version;
+
+                    return Ok(UpdateInfo {
+                        available: is_newer,
+                        version: if is_newer {
+                            Some(tag.to_string())
+                        } else {
+                            None
+                        },
+                        current_version,
+                        body,
+                        date,
+                        download_url: html_url,
+                    });
+                }
+            }
+        }
+        Err(e) => {
+            log::warn!("Failed to check updates: {}", e);
+        }
     }
+
+    Ok(UpdateInfo {
+        available: false,
+        version: None,
+        current_version,
+        body: None,
+        date: None,
+        download_url: None,
+    })
 }
 
 #[tauri::command]
-async fn install_update(app: tauri::AppHandle) -> Result<String, String> {
-    let updater = app.updater().map_err(|e| e.to_string())?;
-    if let Some(update) = updater.check().await.map_err(|e| e.to_string())? {
-        update
-            .download_and_install(
-                |chunk_length, _content_length| {
-                    log::debug!("Downloaded chunk: {} bytes", chunk_length);
-                },
-                || {
-                    log::info!("Download finished, applying update...");
-                },
-            )
-            .await
+async fn install_update() -> Result<String, String> {
+    let url = "https://github.com/devzoic/proxypk/releases/latest";
+    #[cfg(target_os = "windows")]
+    {
+        std::process::Command::new("cmd")
+            .args(["/C", "start", url])
+            .spawn()
             .map_err(|e| e.to_string())?;
-
-        Ok("Update installed. Restarting...".to_string())
-    } else {
-        Err("No update available".to_string())
     }
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .arg(url)
+            .spawn()
+            .map_err(|e| e.to_string())?;
+    }
+    #[cfg(target_os = "linux")]
+    {
+        std::process::Command::new("xdg-open")
+            .arg(url)
+            .spawn()
+            .map_err(|e| e.to_string())?;
+    }
+
+    Ok("Opening latest download release page in browser...".to_string())
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -546,7 +581,6 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_process::init())
-        .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(AppState {
             agent: Mutex::new(AgentState::default()),
             api_client: Mutex::new(None),
