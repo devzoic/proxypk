@@ -57,9 +57,8 @@ jobs:
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          tagName: ${{ github.ref_type == 'tag' && github.ref_name || inputs.tag }}
-          releaseName: 'ProxyPK Desktop Agent ${{ github.ref_type == "tag" && github.ref_name || inputs.tag }}'
+          tagName: ${{ inputs.tag || github.ref_name }}
+          releaseName: 'ProxyPK Desktop Agent ${{ inputs.tag || github.ref_name }}'
           releaseBody: |
             ### ProxyPK Desktop Node Agent Release
 
