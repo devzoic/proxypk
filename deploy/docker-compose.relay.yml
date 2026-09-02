@@ -1,0 +1,11 @@
+version: '3.8'
+
+services:
+  rathole-server:
+    image: rapiz1/rathole:latest
+    container_name: proxypk-relay
+    restart: always
+    network_mode: host
+    volumes:
+      - ./server.toml:/app/server.toml
+    command: ["--server", "/app/server.toml"]
