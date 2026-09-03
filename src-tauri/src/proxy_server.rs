@@ -180,13 +180,10 @@ async fn handle_socks5(
     let mut methods = vec![0u8; nmethods];
     stream.read_exact(&mut methods).await?;
 
-    let require_auth = auth_user.is_some() && auth_pass.is_some();
+    let mut client_user = auth_user.clone();
 
-    if require_auth {
-        if !methods.contains(&0x02) {
-            stream.write_all(&[0x05, 0xFF]).await?;
-            return Ok(());
-        }
+    // Check if client requested User/Password authentication (RFC 1929)
+    if methods.contains(&0x02) {
         stream.write_all(&[0x05, 0x02]).await?;
 
         // Read user/pass auth (RFC 1929)
@@ -200,17 +197,21 @@ async fn handle_socks5(
         let plen = stream.read_u8().await? as usize;
         let mut p_bytes = vec![0u8; plen];
         stream.read_exact(&mut p_bytes).await?;
-        let p = String::from_utf8_lossy(&p_bytes).to_string();
+        let _p = String::from_utf8_lossy(&p_bytes).to_string();
 
-        if auth_user.as_deref() == Some(&u) && auth_pass.as_deref() == Some(&p) {
-            stream.write_all(&[0x01, 0x00]).await?;
-        } else {
-            stream.write_all(&[0x01, 0x01]).await?;
-            return Ok(());
+        if !u.is_empty() {
+            client_user = Some(u);
         }
-    } else {
-        // No auth required
+
+        // Return SOCKS5 authentication success
+        stream.write_all(&[0x01, 0x00]).await?;
+    } else if methods.contains(&0x00) {
+        // No authentication required
         stream.write_all(&[0x05, 0x00]).await?;
+    } else {
+        // No acceptable auth methods
+        stream.write_all(&[0x05, 0xFF]).await?;
+        return Ok(());
     }
 
     // Read Request
@@ -271,7 +272,7 @@ async fn handle_socks5(
 
     record_log(ProxyLogEntry {
         proxy_id,
-        username: auth_user.clone(),
+        username: client_user,
         source_ip: Some(client_addr.ip().to_string()),
         destination_host: Some(target_host),
         destination_port: Some(target_port),
