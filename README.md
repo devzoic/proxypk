@@ -40,27 +40,63 @@ sudo apt-get install -f
 ## Building from Source
 
 ### Prerequisites
-- [Node.js](https://nodejs.org/) (v18+) & `npm`
-- [Rust](https://www.rust-lang.org/) toolchain (`rustup`)
 
-### Steps
+#### 1. System Dependencies (Lubuntu / Ubuntu / Debian / Chromebook)
+On Debian/Ubuntu-based distributions like **Lubuntu** (or Chromebook with Crostini Linux container / native Lubuntu):
+
 ```bash
-# 1. Clone repository
-git clone https://github.com/devzoic/proxypk.git
-cd proxypk
+sudo apt update
+sudo apt install -y \
+  libwebkit2gtk-4.1-dev \
+  build-essential \
+  curl \
+  wget \
+  file \
+  libssl-dev \
+  libxdo-dev \
+  libayatana-appindicator3-dev \
+  librsvg2-dev \
+  pkg-config
+```
 
-# 2. Install dependencies
+#### 2. Rust Toolchain
+Install the latest Rust toolchain:
+```bash
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+source "$HOME/.cargo/env"
+```
+
+#### 3. Node.js & npm (v18+)
+```bash
+curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
+sudo apt install -y nodejs
+```
+
+---
+
+### Step-by-Step Build Guide
+
+```bash
+# 1. Clone the repository
+git clone https://github.com/devzoic/proxypk.git
+cd proxypk/desktop
+
+# 2. Install JavaScript/Tauri CLI dependencies
 npm install
 
-# 3. Start development mode
+# 3. Run in Development Mode (Live Hot-Reload)
 npm run tauri dev
 
-# 4. Build production bundle
+# 4. Build Production Packages (.deb & .AppImage)
 npm run tauri build
 ```
-The compiled installers will be generated under `src-tauri/target/release/bundle/`.
+
+The compiled Linux binaries and packages will be located in:
+- **Debian package**: `desktop/src-tauri/target/release/bundle/deb/`
+- **AppImage package**: `desktop/src-tauri/target/release/bundle/appimage/`
+- **Direct binary**: `desktop/src-tauri/target/release/proxypk-agent`
 
 ---
 
 ## License
-All rights reserved.
+All rights reserved. ProxyPK Team.
