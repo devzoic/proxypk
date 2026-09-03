@@ -586,6 +586,93 @@ pub struct TunnelStatus {
 
 static TUNNEL_CHILD: Mutex<Option<std::process::Child>> = Mutex::new(None);
 
+/// Automatically ensure the Rathole binary exists locally for the current OS/architecture, downloading if needed.
+async fn ensure_rathole_binary() -> Result<std::path::PathBuf, String> {
+    let app_dir = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|d| d.to_path_buf()))
+        .unwrap_or_else(|| std::env::temp_dir());
+
+    let exe_name = if cfg!(target_os = "windows") { "rathole.exe" } else { "rathole" };
+    let target_path = app_dir.join(exe_name);
+
+    if target_path.exists() {
+        return Ok(target_path);
+    }
+
+    // Check system PATH
+    if let Ok(output) = std::process::Command::new(exe_name).arg("--version").output() {
+        if output.status.success() {
+            return Ok(std::path::PathBuf::from(exe_name));
+        }
+    }
+
+    log::info!("Rathole binary missing. Automatically downloading for current OS/Arch...");
+
+    let arch = std::env::consts::ARCH;
+    let os = std::env::consts::OS;
+
+    let download_url = match (os, arch) {
+        ("windows", "x86_64") => "https://github.com/rapiz1/rathole/releases/download/v0.5.0/rathole-x86_64-pc-windows-msvc.zip",
+        ("linux", "x86_64") => "https://github.com/rapiz1/rathole/releases/download/v0.5.0/rathole-x86_64-unknown-linux-gnu.zip",
+        ("linux", "aarch64") => "https://github.com/rapiz1/rathole/releases/download/v0.5.0/rathole-aarch64-unknown-linux-gnu.zip",
+        ("macos", "x86_64") => "https://github.com/rapiz1/rathole/releases/download/v0.5.0/rathole-x86_64-apple-darwin.zip",
+        ("macos", "aarch64") => "https://github.com/rapiz1/rathole/releases/download/v0.5.0/rathole-aarch64-apple-darwin.zip",
+        _ => return Err(format!("Unsupported OS ({}) and Architecture ({}) for automated Rathole download", os, arch)),
+    };
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(60))
+        .build()
+        .map_err(|e| format!("Failed to create download client: {}", e))?;
+
+    let bytes = client
+        .get(download_url)
+        .send()
+        .await
+        .map_err(|e| format!("Failed to download Rathole binary from {}: {}", download_url, e))?
+        .bytes()
+        .await
+        .map_err(|e| format!("Failed to read downloaded binary bytes: {}", e))?;
+
+    let cursor = std::io::Cursor::new(bytes);
+    let mut archive = zip::ZipArchive::new(cursor)
+        .map_err(|e| format!("Failed to parse downloaded zip archive: {}", e))?;
+
+    let mut extracted = false;
+    for i in 0..archive.len() {
+        let mut file = archive
+            .by_index(i)
+            .map_err(|e| format!("Zip archive index error: {}", e))?;
+        let name = file.name().to_string();
+        if name == "rathole" || name == "rathole.exe" || name.ends_with("/rathole") || name.ends_with("/rathole.exe") {
+            let mut out = std::fs::File::create(&target_path)
+                .map_err(|e| format!("Failed to create destination file {:?}: {}", target_path, e))?;
+            std::io::copy(&mut file, &mut out)
+                .map_err(|e| format!("Failed to extract file contents: {}", e))?;
+            extracted = true;
+            break;
+        }
+    }
+
+    if !extracted {
+        return Err("Rathole executable not found inside downloaded zip package".into());
+    }
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if let Ok(metadata) = std::fs::metadata(&target_path) {
+            let mut perms = metadata.permissions();
+            perms.set_mode(0o755);
+            let _ = std::fs::set_permissions(&target_path, perms);
+        }
+    }
+
+    log::info!("Successfully downloaded and provisioned Rathole at {:?}", target_path);
+    Ok(target_path)
+}
+
 /// Fetch latest tunnel config from server, write client.toml, and supervise background Rathole process
 #[tauri::command]
 async fn sync_and_start_tunnel(state: State<'_, AppState>) -> Result<TunnelStatus, String> {
@@ -604,11 +691,14 @@ async fn sync_and_start_tunnel(state: State<'_, AppState>) -> Result<TunnelStatu
 
     let _ = std::fs::write(&config_path, &toml_text);
 
-    let rathole_exe = if cfg!(target_os = "windows") { "rathole.exe" } else { "rathole" };
-    let exe_path = std::env::current_exe()
-        .ok()
-        .and_then(|p| p.parent().map(|d| d.join(rathole_exe)))
-        .unwrap_or_else(|| std::path::PathBuf::from(rathole_exe));
+    let exe_path = match ensure_rathole_binary().await {
+        Ok(path) => path,
+        Err(e) => {
+            log::warn!("Could not auto-provision Rathole binary: {}", e);
+            let rathole_exe = if cfg!(target_os = "windows") { "rathole.exe" } else { "rathole" };
+            std::path::PathBuf::from(rathole_exe)
+        }
+    };
 
     let mut is_running = false;
     let mut child_guard = TUNNEL_CHILD.lock().unwrap();
@@ -627,12 +717,6 @@ async fn sync_and_start_tunnel(state: State<'_, AppState>) -> Result<TunnelStatu
         {
             *child_guard = Some(child);
             is_running = true;
-        } else if let Ok(child) = std::process::Command::new(rathole_exe)
-            .args(["--client", config_str])
-            .spawn()
-        {
-            *child_guard = Some(child);
-            is_running = true;
         }
     }
 
@@ -643,7 +727,7 @@ async fn sync_and_start_tunnel(state: State<'_, AppState>) -> Result<TunnelStatu
         running_services_count: running_proxies_count,
         config_synced: true,
         message: if is_running {
-            "Rathole tunnel process is running and active in background".to_string()
+            "Rathole reverse tunnel is actively routing in the background".to_string()
         } else {
             "Tunnel config updated (client.toml written)".to_string()
         },
