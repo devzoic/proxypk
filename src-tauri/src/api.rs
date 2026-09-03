@@ -317,6 +317,13 @@ impl ApiClient {
             return Err(format!("Tunnel config fetch failed (HTTP {}): {}", status, text));
         }
 
+        // If server returned JSON {"success": true, "toml": "..."}, extract the pure TOML content
+        if let Ok(val) = serde_json::from_str::<serde_json::Value>(&text) {
+            if let Some(toml_str) = val["toml"].as_str() {
+                return Ok(toml_str.to_string());
+            }
+        }
+
         Ok(text)
     }
 }
