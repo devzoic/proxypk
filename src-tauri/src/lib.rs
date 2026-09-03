@@ -1,6 +1,7 @@
 mod api;
 mod models;
 mod proxy_server;
+mod updater;
 
 use api::ApiClient;
 use models::{AdapterInfo, AgentState, InternetCheckResult};
@@ -1081,6 +1082,7 @@ pub fn run() {
             get_app_version,
             check_for_updates,
             install_update,
+            updater::download_and_install_update,
             sync_and_start_tunnel,
             restart_tunnel,
             get_running_proxies,

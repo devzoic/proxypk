@@ -787,37 +787,50 @@
       }
     }
 
+    let unlistenUpdateProgress = null;
+
     async function downloadAndInstallUpdate() {
       const btn = document.getElementById('btn-install-update');
       const prog = document.getElementById('update-progress-container');
       const bar = document.getElementById('update-progress-bar');
       const pct = document.getElementById('update-progress-pct');
+      const lbl = document.getElementById('update-progress-label');
 
-      if (btn) btn.disabled = true;
+      if (btn) {
+        btn.disabled = true;
+        btn.innerHTML = '<span class="spinner-small me-1"></span> Updating...';
+      }
       if (prog) prog.style.display = 'block';
 
-      let sim = 10;
-      const progressTimer = setInterval(() => {
-        if (sim < 90) {
-          sim += 15;
-          if (bar) bar.style.width = sim + '%';
-          if (pct) pct.textContent = sim + '%';
-        }
-      }, 350);
-
-      log('⬇️ Downloading update payload from GitHub releases...', 'info');
-
       try {
-        const res = await invoke('install_update');
-        clearInterval(progressTimer);
+        if (window.__TAURI__ && window.__TAURI__.event && window.__TAURI__.event.listen) {
+          if (unlistenUpdateProgress) {
+            unlistenUpdateProgress();
+          }
+          unlistenUpdateProgress = await window.__TAURI__.event.listen('update-progress', (event) => {
+            const p = event.payload;
+            if (p) {
+              if (lbl && p.status) lbl.textContent = p.status;
+              if (bar && typeof p.percent === 'number') bar.style.width = p.percent + '%';
+              if (pct && typeof p.percent === 'number') pct.textContent = Math.round(p.percent) + '%';
+            }
+          });
+        }
+
+        log('⬇️ Initiating automated in-app download and installation...', 'info');
+        const res = await invoke('download_and_install_update');
+        
         if (bar) bar.style.width = '100%';
         if (pct) pct.textContent = '100%';
+        if (lbl) lbl.textContent = 'Installation complete. Restarting...';
         log(`✅ ${res}`, 'success');
       } catch (e) {
-        clearInterval(progressTimer);
         if (prog) prog.style.display = 'none';
-        if (btn) btn.disabled = false;
-        log(`Update installation error: ${e}`, 'error');
+        if (btn) {
+          btn.disabled = false;
+          btn.innerHTML = '<i class="bi bi-download me-1"></i> Download & Restart Agent';
+        }
+        log(`❌ Update error: ${e}`, 'error');
       }
     }
 

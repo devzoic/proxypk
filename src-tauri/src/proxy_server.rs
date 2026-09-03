@@ -170,7 +170,7 @@ async fn handle_socks5(
     client_addr: SocketAddr,
     proxy_id: u64,
     auth_user: Option<String>,
-    auth_pass: Option<String>,
+    _auth_pass: Option<String>,
     outbound_ip: Option<IpAddr>,
     bytes_counter: Arc<AtomicU64>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {

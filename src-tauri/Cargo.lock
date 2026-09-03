@@ -3081,7 +3081,7 @@ dependencies = [
 
 [[package]]
 name = "proxypk-agent"
-version = "1.0.8"
+version = "1.0.16"
 dependencies = [
  "chrono",
  "env_logger",
