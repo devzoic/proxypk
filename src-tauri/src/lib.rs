@@ -734,6 +734,49 @@ async fn sync_and_start_tunnel(state: State<'_, AppState>) -> Result<TunnelStatu
     })
 }
 
+#[derive(serde::Serialize, serde::Deserialize, Clone)]
+pub struct RunningProxyInfo {
+    pub proxy_id: u64,
+    pub port: u16,
+    pub protocol: String,
+    pub bind_adapter_ip: Option<String>,
+    pub active_connections: u64,
+    pub bytes_transferred: u64,
+    pub is_running: bool,
+}
+
+/// Retrieve all active local proxy listener instances and their status
+#[tauri::command]
+fn get_running_proxies(state: State<'_, AppState>) -> Result<Vec<RunningProxyInfo>, String> {
+    let guard = state.running_proxies.lock().unwrap();
+    let mut list = Vec::new();
+    for (_id, instance) in guard.iter() {
+        list.push(RunningProxyInfo {
+            proxy_id: instance.proxy_id,
+            port: instance.port,
+            protocol: instance.protocol.clone(),
+            bind_adapter_ip: instance.bind_adapter_ip.map(|ip| ip.to_string()),
+            active_connections: instance.active_connections.load(std::sync::atomic::Ordering::Relaxed),
+            bytes_transferred: instance.bytes_transferred.load(std::sync::atomic::Ordering::Relaxed),
+            is_running: instance.is_running.load(std::sync::atomic::Ordering::Relaxed),
+        });
+    }
+    list.sort_by_key(|p| p.proxy_id);
+    Ok(list)
+}
+
+/// Force restart the background Rathole tunnel process
+#[tauri::command]
+async fn restart_tunnel(state: State<'_, AppState>) -> Result<TunnelStatus, String> {
+    {
+        let mut child_guard = TUNNEL_CHILD.lock().unwrap();
+        if let Some(mut child) = child_guard.take() {
+            let _ = child.kill();
+        }
+    }
+    sync_and_start_tunnel(state).await
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -760,6 +803,8 @@ pub fn run() {
             check_for_updates,
             install_update,
             sync_and_start_tunnel,
+            restart_tunnel,
+            get_running_proxies,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

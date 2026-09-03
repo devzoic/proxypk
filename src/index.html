@@ -48,10 +48,14 @@
           </div>
 
           <!-- Navigation Links -->
-          <nav class="sidebar-nav">
             <button class="nav-item active" onclick="switchTab('overview', this)">
               <i class="bi bi-grid-1x2-fill nav-ico"></i>
               <span>Dashboard</span>
+            </button>
+            <button class="nav-item" onclick="switchTab('proxies', this)" id="nav-tab-proxies">
+              <i class="bi bi-shuffle nav-ico"></i>
+              <span>Active Proxies</span>
+              <span class="nav-counter" id="nav-proxy-count" style="background:var(--accent);color:#060907;font-weight:800;">0</span>
             </button>
             <button class="nav-item" onclick="switchTab('adapters', this)" id="nav-tab-adapters">
               <i class="bi bi-diagram-3-fill nav-ico"></i>
@@ -217,6 +221,62 @@
                       <span>Scanning hardware adapters...</span>
                     </div>
                   </div>
+                </div>
+
+                <!-- Reverse Tunnel & Active Proxies Card -->
+                <div class="content-card" style="grid-column: 1 / -1;">
+                  <div class="card-head">
+                    <div class="card-title" style="display:flex;align-items:center;gap:10px;">
+                      <i class="bi bi-broadcast me-1 text-accent"></i>
+                      <span>Reverse Tunnel & Active Proxy Listeners</span>
+                      <span class="badge-status badge-running" id="dash-tunnel-badge" style="font-size:11px;padding:2px 8px;">
+                        <i class="bi bi-circle-fill me-1" style="font-size:7px;"></i> Tunnel Initializing...
+                      </span>
+                    </div>
+                    <div style="display:flex;gap:8px;">
+                      <button class="btn-xs-action" onclick="restartTunnel()" title="Force restart background Rathole client">
+                        <i class="bi bi-arrow-repeat me-1"></i> Restart Tunnel
+                      </button>
+                      <button class="btn-xs-action" onclick="switchTab('proxies', document.getElementById('nav-tab-proxies'))">Manage Proxies →</button>
+                    </div>
+                  </div>
+                  <div class="card-body-padded" id="dash-proxies-summary">
+                    <div class="empty-state-mini">
+                      <i class="bi bi-shuffle"></i>
+                      <span>No active proxy listeners running. Create a proxy in your web dashboard to start routing.</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- ════════ VIEW: ACTIVE PROXIES & REVERSE TUNNELS ════════ -->
+            <div id="view-proxies" class="tab-view">
+              <div class="toolbar-bar">
+                <div style="display:flex;align-items:center;gap:12px;">
+                  <div style="font-size:14px;font-weight:800;color:var(--text-primary);">
+                    Active Proxy Services (<span id="proxies-total-count">0</span>)
+                  </div>
+                  <span class="badge-status badge-running" id="proxies-tunnel-status-pill" style="font-size:11px;">
+                    <i class="bi bi-circle-fill me-1" style="font-size:7px;"></i> Tunnel Active
+                  </span>
+                </div>
+
+                <div class="toolbar-right">
+                  <button class="btn-cta-primary" onclick="syncAndStartProxies()" style="padding:6px 14px;font-size:12px;">
+                    <i class="bi bi-arrow-clockwise"></i> Sync from Dashboard
+                  </button>
+                  <button class="btn-ghost-sm" onclick="restartTunnel()">
+                    <i class="bi bi-lightning-charge-fill"></i> Restart Tunnel
+                  </button>
+                </div>
+              </div>
+
+              <div id="proxies-table-container" style="padding:16px;">
+                <div class="empty-state-card">
+                  <i class="bi bi-shuffle"></i>
+                  <div class="empty-title">No Active Proxy Listeners</div>
+                  <div class="empty-sub">Proxy instances configured in your web panel will appear here automatically with their bound 4G Wingle adapters.</div>
                 </div>
               </div>
             </div>
@@ -1100,13 +1160,121 @@
             const tunnelRes = await invoke('sync_and_start_tunnel');
             if (tunnelRes && tunnelRes.active) {
               log(`⚡ Reverse Tunnel actively routing ${tunnelRes.running_services_count} port(s)`, 'success');
+              const badge = document.getElementById('dash-tunnel-badge');
+              if (badge) {
+                badge.className = 'badge-status badge-running';
+                badge.innerHTML = '<i class="bi bi-circle-fill me-1" style="font-size:7px;"></i> Tunnel Active';
+              }
             }
           } catch (tErr) {
             log(`Tunnel supervisor notice: ${tErr}`, 'info');
           }
+
+          await loadRunningProxies();
         }
       } catch (e) {
         // quiet fallback
+      }
+    }
+
+    async function loadRunningProxies() {
+      try {
+        const list = await invoke('get_running_proxies');
+        const count = list ? list.length : 0;
+        
+        const navCnt = document.getElementById('nav-proxy-count');
+        if (navCnt) navCnt.textContent = count;
+        const totalCnt = document.getElementById('proxies-total-count');
+        if (totalCnt) totalCnt.textContent = count;
+
+        const sumEl = document.getElementById('dash-proxies-summary');
+        if (sumEl) {
+          if (count === 0) {
+            sumEl.innerHTML = `
+              <div class="empty-state-mini">
+                <i class="bi bi-shuffle"></i>
+                <span>No active proxy listeners running. Create a proxy in your web dashboard to start routing.</span>
+              </div>`;
+          } else {
+            let html = `<div style="display:flex;flex-direction:column;gap:8px;">`;
+            for (const p of list) {
+              html += `
+                <div style="background:var(--bg-surface-solid);border:1px solid var(--border-card);border-radius:var(--radius-sm);padding:10px 14px;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;">
+                  <div style="display:flex;align-items:center;gap:10px;">
+                    <span class="badge-status badge-running" style="font-size:11px;"><i class="bi bi-circle-fill me-1" style="font-size:7px;"></i>Running</span>
+                    <span style="font-weight:800;color:var(--text-primary);">Proxy #${p.proxy_id}</span>
+                    <span class="mono" style="color:var(--accent);font-weight:700;">:${p.port} (${p.protocol.toUpperCase()})</span>
+                  </div>
+                  <div style="display:flex;align-items:center;gap:14px;font-size:12px;">
+                    <span style="color:var(--text-muted);"><i class="bi bi-diagram-2 me-1"></i>Bound IP: <b class="mono" style="color:var(--text-primary);">${p.bind_adapter_ip || 'Default Gateway'}</b></span>
+                    <span style="color:var(--text-muted);"><i class="bi bi-arrow-down-up me-1"></i>Conns: <b style="color:var(--text-primary);">${p.active_connections}</b></span>
+                  </div>
+                </div>`;
+            }
+            html += `</div>`;
+            sumEl.innerHTML = html;
+          }
+        }
+
+        const tblEl = document.getElementById('proxies-table-container');
+        if (tblEl) {
+          if (count === 0) {
+            tblEl.innerHTML = `
+              <div class="empty-state-card">
+                <i class="bi bi-shuffle"></i>
+                <div class="empty-title">No Active Proxy Listeners</div>
+                <div class="empty-sub">Proxy instances configured in your web panel will appear here automatically with their bound 4G Wingle adapters.</div>
+              </div>`;
+          } else {
+            let tbl = `
+              <div style="overflow-x:auto;">
+                <table style="width:100%;border-collapse:collapse;font-size:12.5px;text-align:left;">
+                  <thead>
+                    <tr style="border-bottom:1px solid var(--border-card);color:var(--text-muted);">
+                      <th style="padding:10px 12px;">Proxy ID</th>
+                      <th style="padding:10px 12px;">Local Port</th>
+                      <th style="padding:10px 12px;">Protocol</th>
+                      <th style="padding:10px 12px;">Bound Network Wingle / IP</th>
+                      <th style="padding:10px 12px;">Active Conns</th>
+                      <th style="padding:10px 12px;">Status</th>
+                    </tr>
+                  </thead>
+                  <tbody>`;
+            for (const p of list) {
+              tbl += `
+                <tr style="border-bottom:1px solid var(--border-subtle);">
+                  <td style="padding:12px;"><b style="color:var(--text-primary);">Proxy #${p.proxy_id}</b></td>
+                  <td style="padding:12px;"><span class="mono" style="font-weight:700;color:var(--accent);">:${p.port}</span></td>
+                  <td style="padding:12px;"><span style="text-transform:uppercase;font-size:11px;font-weight:700;">${p.protocol}</span></td>
+                  <td style="padding:12px;"><span class="mono" style="color:var(--text-primary);background:var(--bg-surface-solid);padding:3px 8px;border-radius:4px;border:1px solid var(--border-subtle);">${p.bind_adapter_ip || 'Default Gateway'}</span></td>
+                  <td style="padding:12px;"><b style="color:var(--text-primary);">${p.active_connections}</b></td>
+                  <td style="padding:12px;"><span class="badge-status badge-running" style="font-size:11px;"><i class="bi bi-circle-fill me-1" style="font-size:7px;"></i>Listening</span></td>
+                </tr>`;
+            }
+            tbl += `</tbody></table></div>`;
+            tblEl.innerHTML = tbl;
+          }
+        }
+      } catch (e) {
+        console.warn('loadRunningProxies error:', e);
+      }
+    }
+
+    async function restartTunnel() {
+      log('⚡ Restarting background Rathole reverse tunnel...', 'info');
+      try {
+        const res = await invoke('restart_tunnel');
+        log(`✅ ${res.message}`, 'success');
+        const badge = document.getElementById('dash-tunnel-badge');
+        if (badge) {
+          badge.className = res.active ? 'badge-status badge-running' : 'badge-status badge-offline';
+          badge.innerHTML = res.active 
+            ? '<i class="bi bi-circle-fill me-1" style="font-size:7px;"></i> Tunnel Active' 
+            : '<i class="bi bi-x-circle me-1"></i> Tunnel Inactive';
+        }
+        await loadRunningProxies();
+      } catch (e) {
+        log(`❌ Failed to restart tunnel: ${e}`, 'error');
       }
     }
 
@@ -1172,17 +1340,22 @@
       } catch (e) {}
     }
 
+    let proxyPollInterval = null;
+
     function startIntervals() {
       if (heartbeatInterval) clearInterval(heartbeatInterval);
       if (commandPollInterval) clearInterval(commandPollInterval);
       if (logFlushInterval) clearInterval(logFlushInterval);
+      if (proxyPollInterval) clearInterval(proxyPollInterval);
 
       pollCommands();
       syncAndStartProxies();
+      loadRunningProxies();
 
       heartbeatInterval = setInterval(sendHeartbeat, 60000);
       commandPollInterval = setInterval(pollCommands, 5000); // 5s poll for instant responsiveness
       logFlushInterval = setInterval(flushProxyLogs, 4000); // 4s batch ship
+      proxyPollInterval = setInterval(loadRunningProxies, 3000); // 3s live proxy table update
     }
 
     // Auto-connect on startup
