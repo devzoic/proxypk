@@ -738,15 +738,35 @@ pub struct TunnelStatus {
 
 static TUNNEL_CHILD: Mutex<Option<std::process::Child>> = Mutex::new(None);
 
+/// Helper to obtain a reliable, 100% user-writable runtime directory across Windows, Linux, and macOS.
+fn get_runtime_dir() -> std::path::PathBuf {
+    #[cfg(target_os = "windows")]
+    let base = std::env::var_os("LOCALAPPDATA")
+        .map(std::path::PathBuf::from)
+        .or_else(|| std::env::var_os("APPDATA").map(std::path::PathBuf::from))
+        .unwrap_or_else(std::env::temp_dir);
+
+    #[cfg(target_os = "macos")]
+    let base = std::env::var_os("HOME")
+        .map(|h| std::path::PathBuf::from(h).join("Library/Application Support"))
+        .unwrap_or_else(std::env::temp_dir);
+
+    #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
+    let base = std::env::var_os("XDG_DATA_HOME")
+        .map(std::path::PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".local/share")))
+        .unwrap_or_else(std::env::temp_dir);
+
+    let dir = base.join("proxypk");
+    let _ = std::fs::create_dir_all(&dir);
+    dir
+}
+
 /// Automatically ensure the Rathole binary exists locally for the current OS/architecture, downloading if needed.
 async fn ensure_rathole_binary() -> Result<std::path::PathBuf, String> {
-    let app_dir = std::env::current_exe()
-        .ok()
-        .and_then(|p| p.parent().map(|d| d.to_path_buf()))
-        .unwrap_or_else(|| std::env::temp_dir());
-
+    let runtime_dir = get_runtime_dir();
     let exe_name = if cfg!(target_os = "windows") { "rathole.exe" } else { "rathole" };
-    let target_path = app_dir.join(exe_name);
+    let target_path = runtime_dir.join(exe_name);
 
     if target_path.exists() {
         return Ok(target_path);
@@ -759,7 +779,17 @@ async fn ensure_rathole_binary() -> Result<std::path::PathBuf, String> {
         }
     }
 
-    log::info!("Rathole binary missing. Automatically downloading for current OS/Arch...");
+    // Also check next to executable
+    if let Ok(app_exe) = std::env::current_exe() {
+        if let Some(parent) = app_exe.parent() {
+            let next_to_exe = parent.join(exe_name);
+            if next_to_exe.exists() {
+                return Ok(next_to_exe);
+            }
+        }
+    }
+
+    log::info!("Rathole binary missing. Automatically downloading to {:?}...", target_path);
 
     let arch = std::env::consts::ARCH;
     let os = std::env::consts::OS;
@@ -841,13 +871,12 @@ async fn sync_and_start_tunnel(state: State<'_, AppState>) -> Result<TunnelStatu
             .replace("localhost:2333", "relay.devzoic.com:2333");
     }
 
-    // Determine config path in current directory or temp
-    let config_path = std::env::current_exe()
-        .ok()
-        .and_then(|p| p.parent().map(|d| d.join("client.toml")))
-        .unwrap_or_else(|| std::path::PathBuf::from("client.toml"));
+    // Determine user-writable config path in runtime directory
+    let runtime_dir = get_runtime_dir();
+    let config_path = runtime_dir.join("client.toml");
 
-    let _ = std::fs::write(&config_path, &toml_text);
+    std::fs::write(&config_path, &toml_text)
+        .map_err(|e| format!("Failed to write client.toml at {:?}: {}", config_path, e))?;
 
     let exe_path = match ensure_rathole_binary().await {
         Ok(path) => path,
@@ -882,13 +911,19 @@ async fn sync_and_start_tunnel(state: State<'_, AppState>) -> Result<TunnelStatu
                 .output();
         }
 
-        let config_str = config_path.to_str().unwrap_or("client.toml");
-        if let Ok(child) = create_hidden_command(&exe_path)
-            .args(["--client", config_str])
+        let config_str = config_path.to_string_lossy().to_string();
+        match create_hidden_command(&exe_path)
+            .args(["--client", &config_str])
             .spawn()
         {
-            *child_guard = Some(child);
-            is_running = true;
+            Ok(child) => {
+                log::info!("Spawned Rathole reverse tunnel (PID: {}) using config {:?}", child.id(), config_path);
+                *child_guard = Some(child);
+                is_running = true;
+            }
+            Err(e) => {
+                return Err(format!("Failed to launch Rathole executable {:?}: {}", exe_path, e));
+            }
         }
     }
 
