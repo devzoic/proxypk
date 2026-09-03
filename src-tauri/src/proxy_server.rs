@@ -284,6 +284,29 @@ async fn handle_socks5(
     Ok(())
 }
 
+fn decode_base64(input: &str) -> Option<Vec<u8>> {
+    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = Vec::new();
+    let mut buf = 0u32;
+    let mut bits = 0;
+    for &b in input.as_bytes() {
+        if b == b'=' || b.is_ascii_whitespace() {
+            continue;
+        }
+        let val = match TABLE.iter().position(|&x| x == b) {
+            Some(idx) => idx as u32,
+            None => return None,
+        };
+        buf = (buf << 6) | val;
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            out.push((buf >> bits) as u8);
+        }
+    }
+    Some(out)
+}
+
 /// HTTP / HTTPS Connect Handler
 async fn handle_http_proxy(
     mut stream: TcpStream,
@@ -302,6 +325,24 @@ async fn handle_http_proxy(
 
     let req_str = String::from_utf8_lossy(&buf[..n]);
     let first_line = req_str.lines().next().unwrap_or("");
+
+    // Extract authenticated username from Proxy-Authorization header if provided by client
+    let mut client_user = auth_user.clone();
+    for line in req_str.lines() {
+        let trimmed = line.trim();
+        if trimmed.to_ascii_lowercase().starts_with("proxy-authorization:") {
+            if let Some(pos) = trimmed.to_ascii_lowercase().find("basic ") {
+                let encoded = trimmed[pos + 6..].trim();
+                if let Some(decoded) = decode_base64(encoded) {
+                    if let Ok(cred_str) = String::from_utf8(decoded) {
+                        if let Some((u, _)) = cred_str.split_once(':') {
+                            client_user = Some(u.to_string());
+                        }
+                    }
+                }
+            }
+        }
+    }
 
     if first_line.starts_with("CONNECT ") {
         let parts: Vec<&str> = first_line.split_whitespace().collect();
@@ -323,7 +364,7 @@ async fn handle_http_proxy(
 
                 record_log(ProxyLogEntry {
                     proxy_id,
-                    username: auth_user.clone(),
+                    username: client_user,
                     source_ip: Some(client_addr.ip().to_string()),
                     destination_host: Some(dest_host),
                     destination_port: Some(dest_port),
@@ -356,7 +397,7 @@ async fn handle_http_proxy(
 
                 record_log(ProxyLogEntry {
                     proxy_id,
-                    username: auth_user.clone(),
+                    username: client_user,
                     source_ip: Some(client_addr.ip().to_string()),
                     destination_host: Some(host.to_string()),
                     destination_port: Some(80),

@@ -1370,17 +1370,18 @@
       }
     }
 
-    let logFlushInterval = null;
-
     async function flushProxyLogs() {
       try {
         const count = await invoke('flush_proxy_logs');
         if (count > 0) {
           log(`📊 Shipped ${count} connection traffic log(s) to server`, 'info');
         }
-      } catch (e) {}
+      } catch (e) {
+        log(`⚠️ Traffic log shipping: ${e}`, 'warn');
+      }
     }
 
+    let logFlushInterval = null;
     let proxyPollInterval = null;
 
     function startIntervals() {
