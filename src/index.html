@@ -48,6 +48,7 @@
           </div>
 
           <!-- Navigation Links -->
+          <nav class="sidebar-nav">
             <button class="nav-item active" onclick="switchTab('overview', this)">
               <i class="bi bi-grid-1x2-fill nav-ico"></i>
               <span>Dashboard</span>
@@ -88,6 +89,9 @@
             </div>
           </div>
         </aside>
+
+        <!-- Toast Notifications Container -->
+        <div id="toast-container" class="toast-container"></div>
 
         <!-- ─── Main Content Canvas ───────────────────────────────── -->
         <div class="content-wrapper">
@@ -560,10 +564,46 @@
       }
     });
 
+    // ─── Toast Notification System ──────────────────────────
+    function showToast(type, title, message) {
+      const container = document.getElementById('toast-container');
+      if (!container) return;
+
+      const icons = {
+        success: 'bi-check-circle-fill',
+        error: 'bi-x-circle-fill',
+        warning: 'bi-exclamation-triangle-fill',
+        info: 'bi-info-circle-fill',
+      };
+
+      const toast = document.createElement('div');
+      toast.className = `toast-item ${type || 'info'}`;
+      toast.innerHTML = `
+        <i class="bi ${icons[type] || 'bi-info-circle-fill'} toast-icon"></i>
+        <div class="toast-content">
+          <div class="toast-title">${title || 'Notification'}</div>
+          <div class="toast-msg">${message || ''}</div>
+        </div>
+        <button class="toast-close" onclick="this.parentElement.remove()"><i class="bi bi-x"></i></button>
+      `;
+
+      container.appendChild(toast);
+
+      setTimeout(() => {
+        toast.classList.add('removing');
+        setTimeout(() => toast.remove(), 300);
+      }, 4000);
+    }
+
     // ─── Sidebar Navigation ──────────────────────────────────
     function switchTab(tabName, btnEl) {
       document.querySelectorAll('.sidebar-nav .nav-item').forEach(el => el.classList.remove('active'));
-      if (btnEl) btnEl.classList.add('active');
+      if (btnEl) {
+        btnEl.classList.add('active');
+      } else {
+        const targetBtn = document.getElementById('nav-tab-' + tabName) || document.querySelector(`.sidebar-nav .nav-item[onclick*="${tabName}"]`);
+        if (targetBtn) targetBtn.classList.add('active');
+      }
 
       document.querySelectorAll('.tab-view').forEach(el => el.classList.remove('active'));
       const activeView = document.getElementById('view-' + tabName);
@@ -571,6 +611,7 @@
 
       const titles = {
         'overview': { title: 'Dashboard', sub: 'Real-time node telemetry & connection status' },
+        'proxies': { title: 'Active Proxies & Tunnels', sub: 'Inspect active local proxy listeners and reverse tunnel forwarding' },
         'adapters': { title: 'Network Adapters', sub: 'Inspect hardware interfaces & verify public internet routes' },
         'logs': { title: 'Activity Logs', sub: 'Live streaming event daemon console' },
         'updates': { title: 'Software Updates', sub: 'Automated OTA updates, release verification, and daemon runtime updates' },
@@ -1025,8 +1066,11 @@
 
     async function testSingleAdapter(adapterName) {
       const adapter = cachedAdapters.find(a => a.adapter_name === adapterName);
-      if (!adapter || !adapter.local_ip) {
+      if (!adapter) return;
+
+      if (!adapter.local_ip) {
         log(`Cannot test adapter ${adapterName}: no local IP assigned`, 'warn');
+        showToast('warning', 'Untested', `No local IP assigned to ${adapterName}`);
         return;
       }
 
@@ -1043,13 +1087,16 @@
 
         if (result.has_internet) {
           log(`Interface ${adapter.adapter_name} verified online: ${result.external_ip} (${result.ping_ms}ms latency)`, 'success');
+          showToast('success', 'Internet Verified', `${adapter.adapter_name} has internet: ${result.external_ip} (${result.ping_ms}ms)`);
         } else {
           log(`Interface ${adapter.adapter_name} has NO public internet (${result.error || 'No route'})`, 'warn');
+          showToast('warning', 'Local Only', `${adapter.adapter_name} has no public internet route`);
         }
       } catch (e) {
         adapter.has_internet = false;
         adapter.is_testing = false;
         log(`Test failed for ${adapterName}: ` + e, 'error');
+        showToast('error', 'Test Failed', String(e));
       }
 
       renderAdapters();
@@ -1091,6 +1138,7 @@
 
       const onlineCount = cachedAdapters.filter(a => a.has_internet === true).length;
       log(`Internet check complete: ${onlineCount} of ${cachedAdapters.length} adapter(s) verified online!`, 'success');
+      showToast('success', 'Verification Complete', `${onlineCount} of ${cachedAdapters.length} interface(s) verified online!`);
 
       btn.disabled = false;
       btn.innerHTML = '<i class="bi bi-lightning-charge-fill"></i> <span>Test All Internet</span>';
@@ -1123,57 +1171,30 @@
       await syncAdapters();
     }
 
-    async function syncAndStartProxies() {
+    async function syncAndStartProxies(isManual = false) {
       try {
-        const state = await invoke('get_agent_state');
-        if (!state.api_token) return;
-
-        const serverUrl = (state.server_url || 'http://proxy.test').replace(/\/$/, '');
-        const res = await fetch(`${serverUrl}/api/desktop/proxy/config?machine_id=${encodeURIComponent(state.machine_id)}`, {
-          headers: {
-            'Authorization': `Bearer ${state.api_token}`,
-            'Accept': 'application/json'
+        if (isManual) log('Fetching and starting proxy listeners from dashboard...', 'info');
+        const res = await invoke('fetch_and_start_proxies');
+        
+        if (res.success) {
+          log(`✅ ${res.message}`, 'success');
+          if (isManual) {
+            showToast('success', 'Proxies Synchronized', `${res.running_started} proxy listener(s) running.`);
           }
-        });
-        const data = await res.json();
-        if (data.success && data.proxies) {
-          for (const p of data.proxies) {
-            if (p.status === 'running') {
-              try {
-                const res = await invoke('start_proxy_server', {
-                  proxyId: Number(p.id),
-                  port: Number(p.local_port),
-                  protocol: p.protocol,
-                  username: p.username || null,
-                  password: p.password || null,
-                  adapterIp: p.network_adapter ? p.network_adapter.local_ip : null
-                });
-                log(`🚀 Auto-started Proxy #${p.id} on port :${p.local_port} (${p.protocol.toUpperCase()})`, 'success');
-              } catch (err) {
-                log(`Notice for Proxy #${p.id}: ${err}`, 'info');
-              }
-            }
+          const badge = document.getElementById('dash-tunnel-badge');
+          if (badge && res.tunnel_status) {
+            badge.className = res.tunnel_status.active ? 'badge-status badge-running' : 'badge-status badge-offline';
+            badge.innerHTML = res.tunnel_status.active 
+              ? '<i class="bi bi-circle-fill me-1" style="font-size:7px;"></i> Tunnel Active' 
+              : '<i class="bi bi-x-circle me-1"></i> Tunnel Inactive';
           }
-
-          // Automatically sync and supervise Rathole tunnel in background
-          try {
-            const tunnelRes = await invoke('sync_and_start_tunnel');
-            if (tunnelRes && tunnelRes.active) {
-              log(`⚡ Reverse Tunnel actively routing ${tunnelRes.running_services_count} port(s)`, 'success');
-              const badge = document.getElementById('dash-tunnel-badge');
-              if (badge) {
-                badge.className = 'badge-status badge-running';
-                badge.innerHTML = '<i class="bi bi-circle-fill me-1" style="font-size:7px;"></i> Tunnel Active';
-              }
-            }
-          } catch (tErr) {
-            log(`Tunnel supervisor notice: ${tErr}`, 'info');
-          }
-
-          await loadRunningProxies();
         }
+        await loadRunningProxies();
       } catch (e) {
-        // quiet fallback
+        log(`Proxy sync notice: ${e}`, 'warn');
+        if (isManual) {
+          showToast('error', 'Sync Error', String(e));
+        }
       }
     }
 

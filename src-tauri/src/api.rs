@@ -269,6 +269,32 @@ impl ApiClient {
             .map_err(|e| format!("JSON decode error ({}): {}", e, text))
     }
 
+    /// Fetch proxy configs for this device from Laravel server.
+    pub async fn get_proxy_configs(&self) -> Result<serde_json::Value, String> {
+        let url = format!("{}/api/desktop/proxy/config?machine_id={}", self.base_url, self.machine_id);
+
+        let resp = self
+            .client
+            .get(&url)
+            .headers(self.auth_headers())
+            .send()
+            .await
+            .map_err(|e| format!("Proxy config fetch error: {}", e))?;
+
+        let status = resp.status();
+        let text = resp
+            .text()
+            .await
+            .map_err(|e| format!("Failed to read proxy configs: {}", e))?;
+
+        if !status.is_success() {
+            return Err(format!("Proxy config fetch failed (HTTP {}): {}", status, text));
+        }
+
+        serde_json::from_str::<serde_json::Value>(&text)
+            .map_err(|e| format!("JSON decode error ({}): {}", e, text))
+    }
+
     /// Fetch latest dynamic Rathole client configuration from Laravel server.
     pub async fn get_tunnel_config(&self) -> Result<String, String> {
         let url = format!("{}/api/desktop/tunnel/config?machine_id={}", self.base_url, self.machine_id);

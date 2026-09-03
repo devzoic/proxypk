@@ -15,61 +15,175 @@ pub struct AppState {
     pub running_proxies: Mutex<HashMap<u64, proxy_server::ProxyInstance>>,
 }
 
-/// Helper on macOS to query real hardware ports and map devices to friendly names
-#[cfg(target_os = "macos")]
-fn get_macos_hardware_ports() -> HashMap<String, (String, String, String)> {
+#[derive(Clone, Debug)]
+struct HardwarePortMeta {
+    pub display_name: String,
+    pub mac_address: Option<String>,
+    pub adapter_type: String,
+}
+
+/// Helper to query hardware ports and MAC addresses across Windows, Linux, and macOS
+fn get_hardware_adapters_map() -> HashMap<String, HardwarePortMeta> {
     let mut map = HashMap::new();
 
-    if let Ok(output) = std::process::Command::new("networksetup")
-        .arg("-listallhardwareports")
-        .output()
+    #[cfg(target_os = "windows")]
     {
-        if output.status.success() {
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            let mut current_port = String::new();
-            let mut current_device = String::new();
+        // Query PowerShell Get-NetAdapter for exact Name, InterfaceDescription, MacAddress, Status, MediaType
+        if let Ok(output) = std::process::Command::new("powershell")
+            .args([
+                "-NoProfile",
+                "-Command",
+                "Get-NetAdapter -IncludeHidden | Select-Object -Property Name, InterfaceDescription, MacAddress, Status, MediaType | ConvertTo-Json -Compress"
+            ])
+            .output()
+        {
+            if output.status.success() {
+                let json_str = String::from_utf8_lossy(&output.stdout);
+                if let Ok(val) = serde_json::from_str::<serde_json::Value>(&json_str) {
+                    let items = if let Some(arr) = val.as_array() {
+                        arr.clone()
+                    } else if val.is_object() {
+                        vec![val]
+                    } else {
+                        vec![]
+                    };
 
-            for line in stdout.lines() {
-                let trimmed = line.trim();
-                if trimmed.starts_with("Hardware Port:") {
-                    current_port = trimmed.trim_start_matches("Hardware Port:").trim().to_string();
-                } else if trimmed.starts_with("Device:") {
-                    current_device = trimmed.trim_start_matches("Device:").trim().to_string();
-                } else if trimmed.starts_with("Ethernet Address:") {
-                    let current_mac = trimmed.trim_start_matches("Ethernet Address:").trim().to_string();
+                    for item in items {
+                        let name = item["Name"].as_str().unwrap_or("").trim().to_string();
+                        let desc = item["InterfaceDescription"].as_str().unwrap_or("").trim().to_string();
+                        let raw_mac = item["MacAddress"].as_str().unwrap_or("").trim().to_string();
+                        let media = item["MediaType"].as_str().unwrap_or("").to_lowercase();
 
-                    if !current_device.is_empty() {
-                        let lower_port = current_port.to_lowercase();
-                        let adapter_type = if lower_port.contains("wi-fi") || lower_port.contains("wifi") || lower_port.contains("wireless") {
-                            "wifi"
-                        } else if lower_port.contains("ethernet") || lower_port.contains("lan") || lower_port.contains("thunderbolt") {
-                            "ethernet"
-                        } else if lower_port.contains("huawei") || lower_port.contains("wingle") || lower_port.contains("modem") || lower_port.contains("zte") {
-                            "wingle"
-                        } else if lower_port.contains("cellular") || lower_port.contains("mobile") || lower_port.contains("lte") {
-                            "cellular"
+                        if name.is_empty() {
+                            continue;
+                        }
+
+                        let mac_address = if !raw_mac.is_empty() && raw_mac != "--" {
+                            Some(raw_mac.replace('-', ":").to_uppercase())
                         } else {
-                            "ethernet"
+                            None
                         };
 
-                        map.insert(
-                            current_device.clone(),
-                            (current_port.clone(), current_mac, adapter_type.to_string()),
-                        );
+                        let lower_desc = desc.to_lowercase();
+                        let adapter_type = if lower_desc.contains("rndis")
+                            || lower_desc.contains("huawei")
+                            || lower_desc.contains("zte")
+                            || lower_desc.contains("qualcomm")
+                            || lower_desc.contains("mobile broadband")
+                            || lower_desc.contains("cellular")
+                            || lower_desc.contains("modem")
+                            || lower_desc.contains("wingle")
+                            || media.contains("cellular")
+                            || media.contains("wwan")
+                        {
+                            "wingle".to_string()
+                        } else if media.contains("802.3") || lower_desc.contains("ethernet") || lower_desc.contains("gigabit") || lower_desc.contains("realtek") || lower_desc.contains("intel") {
+                            "ethernet".to_string()
+                        } else if media.contains("native 802.11") || lower_desc.contains("wi-fi") || lower_desc.contains("wireless") || lower_desc.contains("802.11") {
+                            "wifi".to_string()
+                        } else {
+                            "other".to_string()
+                        };
+
+                        let display_name = if !desc.is_empty() {
+                            format!("{} ({})", name, desc)
+                        } else {
+                            name.clone()
+                        };
+
+                        map.insert(name, HardwarePortMeta {
+                            display_name,
+                            mac_address,
+                            adapter_type,
+                        });
                     }
-                    current_port.clear();
-                    current_device.clear();
+                }
+            }
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        if let Ok(entries) = std::fs::read_dir("/sys/class/net") {
+            for entry in entries.flatten() {
+                let name = entry.file_name().to_string_lossy().to_string();
+                if name.starts_with("lo") {
+                    continue;
+                }
+
+                let mac_path = format!("/sys/class/net/{}/address", name);
+                let mac_address = std::fs::read_to_string(&mac_path)
+                    .ok()
+                    .map(|s| s.trim().to_uppercase())
+                    .filter(|s| !s.is_empty() && s != "00:00:00:00:00:00");
+
+                let adapter_type = if name.starts_with("wwan") || name.starts_with("rmnet") || name.starts_with("usb") || name.starts_with("cdc") {
+                    "wingle".to_string()
+                } else if name.starts_with("wl") {
+                    "wifi".to_string()
+                } else {
+                    "ethernet".to_string()
+                };
+
+                map.insert(name.clone(), HardwarePortMeta {
+                    display_name: format!("Interface ({})", name),
+                    mac_address,
+                    adapter_type,
+                });
+            }
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        if let Ok(output) = std::process::Command::new("networksetup")
+            .arg("-listallhardwareports")
+            .output()
+        {
+            if output.status.success() {
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                let mut current_port = String::new();
+                let mut current_device = String::new();
+
+                for line in stdout.lines() {
+                    let trimmed = line.trim();
+                    if trimmed.starts_with("Hardware Port:") {
+                        current_port = trimmed.trim_start_matches("Hardware Port:").trim().to_string();
+                    } else if trimmed.starts_with("Device:") {
+                        current_device = trimmed.trim_start_matches("Device:").trim().to_string();
+                    } else if trimmed.starts_with("Ethernet Address:") {
+                        let current_mac = trimmed.trim_start_matches("Ethernet Address:").trim().to_string();
+
+                        if !current_device.is_empty() {
+                            let lower_port = current_port.to_lowercase();
+                            let adapter_type = if lower_port.contains("wi-fi") || lower_port.contains("wifi") || lower_port.contains("wireless") {
+                                "wifi"
+                            } else if lower_port.contains("huawei") || lower_port.contains("wingle") || lower_port.contains("modem") || lower_port.contains("zte") {
+                                "wingle"
+                            } else if lower_port.contains("cellular") || lower_port.contains("mobile") || lower_port.contains("lte") {
+                                "cellular"
+                            } else {
+                                "ethernet"
+                            };
+
+                            map.insert(
+                                current_device.clone(),
+                                HardwarePortMeta {
+                                    display_name: format!("{} ({})", current_port, current_device),
+                                    mac_address: Some(current_mac.to_uppercase()),
+                                    adapter_type: adapter_type.to_string(),
+                                },
+                            );
+                        }
+                        current_port.clear();
+                        current_device.clear();
+                    }
                 }
             }
         }
     }
 
     map
-}
-
-#[cfg(not(target_os = "macos"))]
-fn get_macos_hardware_ports() -> HashMap<String, (String, String, String)> {
-    HashMap::new()
 }
 
 /// Initialize the agent by connecting to the server.
@@ -159,7 +273,7 @@ fn get_agent_state(state: State<'_, AppState>) -> AgentState {
 #[tauri::command]
 fn detect_adapters(include_virtual: Option<bool>) -> Vec<AdapterInfo> {
     let allow_virtual = include_virtual.unwrap_or(false);
-    let hardware_map = get_macos_hardware_ports();
+    let hardware_map = get_hardware_adapters_map();
     let mut interface_ips: HashMap<String, Vec<std::net::IpAddr>> = HashMap::new();
 
     if let Ok(interfaces) = local_ip_address::list_afinet_netifas() {
@@ -172,7 +286,11 @@ fn detect_adapters(include_virtual: Option<bool>) -> Vec<AdapterInfo> {
 
     for (name, ips) in interface_ips {
         // Filter out loopback
-        if name.starts_with("lo") || name == "127.0.0.1" || name == "::1" {
+        if name.starts_with("lo")
+            || name.contains("Loopback")
+            || name == "127.0.0.1"
+            || name == "::1"
+        {
             continue;
         }
 
@@ -183,6 +301,7 @@ fn detect_adapters(include_virtual: Option<bool>) -> Vec<AdapterInfo> {
             || name.starts_with("gif")
             || name.starts_with("stf")
             || name.starts_with("vboxnet")
+            || name.starts_with("vEthernet")
             || name.starts_with("docker");
 
         // Skip virtual interfaces unless requested
@@ -194,24 +313,30 @@ fn detect_adapters(include_virtual: Option<bool>) -> Vec<AdapterInfo> {
         let primary_v4 = ips.iter().find(|ip| ip.is_ipv4()).map(|ip| ip.to_string());
         let primary_ip = primary_v4.clone().or_else(|| ips.first().map(|ip| ip.to_string()));
 
-        // Don't show interfaces with only fe80 link-local addresses when virtuals are hidden
-        if !allow_virtual && primary_ip.as_ref().map_or(true, |ip| ip.starts_with("fe80:")) {
-            continue;
+        // Filter out disconnected link-local / APIPA (169.254.x.x) or fe80 when virtuals hidden
+        if !allow_virtual {
+            if let Some(ref ip) = primary_ip {
+                if ip.starts_with("169.254.") || ip.starts_with("fe80:") {
+                    continue;
+                }
+            } else {
+                continue;
+            }
         }
 
-        let (display_name, mac, adapter_type) = if let Some((port_name, mac_addr, atype)) = hardware_map.get(&name) {
+        let (display_name, mac, adapter_type) = if let Some(meta) = hardware_map.get(&name) {
             (
-                Some(format!("{} ({})", port_name, name)),
-                Some(mac_addr.clone()),
-                atype.clone(),
+                Some(meta.display_name.clone()),
+                meta.mac_address.clone(),
+                meta.adapter_type.clone(),
             )
         } else {
-            let atype = if name.starts_with("en") || name.starts_with("eth") {
+            let atype = if name.starts_with("en") || name.starts_with("eth") || name.contains("Ethernet") {
                 "ethernet"
-            } else if name.starts_with("wl") || name.contains("Wi-Fi") || name.contains("wi-fi") {
+            } else if name.starts_with("wl") || name.contains("Wi-Fi") || name.contains("wi-fi") || name.contains("Wireless") {
                 "wifi"
-            } else if name.starts_with("wwan") || name.starts_with("rmnet") {
-                "cellular"
+            } else if name.starts_with("wwan") || name.starts_with("rmnet") || name.contains("Cellular") || name.contains("Wingle") {
+                "wingle"
             } else if is_virtual {
                 "vpn"
             } else {
@@ -350,20 +475,35 @@ async fn check_adapter_internet(ip: String) -> Result<InternetCheckResult, Strin
     })
 }
 
-/// Sync detected adapters to server.
+/// Sync detected adapters to server with strict filtering (no loopback, no 169.254 APIPA).
 #[tauri::command]
 async fn sync_adapters(
     adapters: Option<Vec<AdapterInfo>>,
     state: State<'_, AppState>,
 ) -> Result<String, String> {
-    let adapter_list = adapters.unwrap_or_else(|| detect_adapters(Some(false)));
+    let raw_list = adapters.unwrap_or_else(|| detect_adapters(Some(false)));
+
+    let clean_list: Vec<AdapterInfo> = raw_list
+        .into_iter()
+        .filter(|a| {
+            if let Some(ref ip) = a.local_ip {
+                !ip.starts_with("169.254.")
+                    && !ip.starts_with("127.")
+                    && !ip.starts_with("fe80:")
+                    && !a.adapter_name.contains("Loopback")
+                    && !a.adapter_name.contains("vEthernet")
+            } else {
+                false
+            }
+        })
+        .collect();
 
     let client = {
         let guard = state.api_client.lock().unwrap();
         guard.clone().ok_or_else(|| "Not connected".to_string())?
     };
 
-    client.sync_adapters(adapter_list).await?;
+    client.sync_adapters(clean_list).await?;
     Ok("Adapters synced successfully".to_string())
 }
 
@@ -777,6 +917,78 @@ async fn restart_tunnel(state: State<'_, AppState>) -> Result<TunnelStatus, Stri
     sync_and_start_tunnel(state).await
 }
 
+#[derive(serde::Serialize, serde::Deserialize, Default, Clone)]
+pub struct FetchProxiesResult {
+    pub success: bool,
+    pub total_proxies: usize,
+    pub running_started: usize,
+    pub tunnel_status: Option<TunnelStatus>,
+    pub message: String,
+}
+
+/// Fetch proxy configuration from Laravel control plane and start all running proxy listeners + reverse tunnel
+#[tauri::command]
+async fn fetch_and_start_proxies(state: State<'_, AppState>) -> Result<FetchProxiesResult, String> {
+    let client = {
+        let guard = state.api_client.lock().unwrap();
+        guard.clone().ok_or_else(|| "Agent not connected to server".to_string())?
+    };
+
+    let data = client.get_proxy_configs().await?;
+    let proxies = data["proxies"].as_array().cloned().unwrap_or_default();
+    let total_count = proxies.len();
+    let mut started_count = 0;
+
+    for p in &proxies {
+        let status = p["status"].as_str().unwrap_or("");
+        if status == "running" {
+            let proxy_id = p["id"].as_u64().unwrap_or(0);
+            let port = p["local_port"].as_u64().unwrap_or(0) as u16;
+            let protocol = p["protocol"].as_str().map(|s| s.to_string());
+            let username = p["username"].as_str().map(|s| s.to_string());
+            let password = p["password"].as_str().map(|s| s.to_string());
+            let adapter_ip = p["network_adapter"]["local_ip"].as_str().map(|s| s.to_string());
+
+            if port > 0 {
+                let bind_ip = adapter_ip.and_then(|ip| ip.parse::<std::net::IpAddr>().ok());
+                let proto = protocol.unwrap_or_else(|| "both".to_string());
+
+                // Stop duplicate if running
+                {
+                    let mut guard = state.running_proxies.lock().unwrap();
+                    if let Some(existing) = guard.remove(&proxy_id) {
+                        existing.stop();
+                    }
+                }
+
+                if let Ok(instance) = proxy_server::ProxyInstance::start(
+                    proxy_id,
+                    port,
+                    proto,
+                    username,
+                    password,
+                    bind_ip,
+                ).await {
+                    let mut guard = state.running_proxies.lock().unwrap();
+                    guard.insert(proxy_id, instance);
+                    started_count += 1;
+                }
+            }
+        }
+    }
+
+    // Now synchronize and supervise the reverse tunnel
+    let tunnel_status = sync_and_start_tunnel(state).await.ok();
+
+    Ok(FetchProxiesResult {
+        success: true,
+        total_proxies: total_count,
+        running_started: started_count,
+        tunnel_status,
+        message: format!("Synchronized {} proxy listener(s) from dashboard", started_count),
+    })
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -805,6 +1017,7 @@ pub fn run() {
             sync_and_start_tunnel,
             restart_tunnel,
             get_running_proxies,
+            fetch_and_start_proxies,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
