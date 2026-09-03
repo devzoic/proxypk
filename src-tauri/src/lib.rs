@@ -576,6 +576,80 @@ async fn install_update() -> Result<String, String> {
     Ok("Opening latest download release page in browser...".to_string())
 }
 
+#[derive(serde::Serialize, serde::Deserialize, Default, Clone)]
+pub struct TunnelStatus {
+    pub active: bool,
+    pub running_services_count: usize,
+    pub config_synced: bool,
+    pub message: String,
+}
+
+static TUNNEL_CHILD: Mutex<Option<std::process::Child>> = Mutex::new(None);
+
+/// Fetch latest tunnel config from server, write client.toml, and supervise background Rathole process
+#[tauri::command]
+async fn sync_and_start_tunnel(state: State<'_, AppState>) -> Result<TunnelStatus, String> {
+    let client = {
+        let guard = state.api_client.lock().unwrap();
+        guard.clone().ok_or_else(|| "Agent not connected to server".to_string())?
+    };
+
+    let toml_text = client.get_tunnel_config().await?;
+
+    // Determine config path in current directory or temp
+    let config_path = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|d| d.join("client.toml")))
+        .unwrap_or_else(|| std::path::PathBuf::from("client.toml"));
+
+    let _ = std::fs::write(&config_path, &toml_text);
+
+    let rathole_exe = if cfg!(target_os = "windows") { "rathole.exe" } else { "rathole" };
+    let exe_path = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|d| d.join(rathole_exe)))
+        .unwrap_or_else(|| std::path::PathBuf::from(rathole_exe));
+
+    let mut is_running = false;
+    let mut child_guard = TUNNEL_CHILD.lock().unwrap();
+
+    if let Some(child) = child_guard.as_mut() {
+        if let Ok(None) = child.try_wait() {
+            is_running = true;
+        }
+    }
+
+    if !is_running {
+        let config_str = config_path.to_str().unwrap_or("client.toml");
+        if let Ok(child) = std::process::Command::new(&exe_path)
+            .args(["--client", config_str])
+            .spawn()
+        {
+            *child_guard = Some(child);
+            is_running = true;
+        } else if let Ok(child) = std::process::Command::new(rathole_exe)
+            .args(["--client", config_str])
+            .spawn()
+        {
+            *child_guard = Some(child);
+            is_running = true;
+        }
+    }
+
+    let running_proxies_count = state.running_proxies.lock().unwrap().len();
+
+    Ok(TunnelStatus {
+        active: is_running,
+        running_services_count: running_proxies_count,
+        config_synced: true,
+        message: if is_running {
+            "Rathole tunnel process is running and active in background".to_string()
+        } else {
+            "Tunnel config updated (client.toml written)".to_string()
+        },
+    })
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -601,6 +675,7 @@ pub fn run() {
             get_app_version,
             check_for_updates,
             install_update,
+            sync_and_start_tunnel,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
