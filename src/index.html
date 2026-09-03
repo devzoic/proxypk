@@ -1094,6 +1094,16 @@
               }
             }
           }
+
+          // Automatically sync and supervise Rathole tunnel in background
+          try {
+            const tunnelRes = await invoke('sync_and_start_tunnel');
+            if (tunnelRes && tunnelRes.active) {
+              log(`⚡ Reverse Tunnel actively routing ${tunnelRes.running_services_count} port(s)`, 'success');
+            }
+          } catch (tErr) {
+            log(`Tunnel supervisor notice: ${tErr}`, 'info');
+          }
         }
       } catch (e) {
         // quiet fallback
@@ -1129,10 +1139,12 @@
             adapterIp: p.adapter_ip || null
           });
           log(`🚀 [START_PROXY #${cmd.id}] ${res}`, 'success');
+          try { await invoke('sync_and_start_tunnel'); } catch (e) {}
           await invoke('ack_command', { commandId: cmd.id, success: true, result: { message: res } });
         } else if (cmd.command === 'stop_proxy') {
           const res = await invoke('stop_proxy_server', { proxyId: Number(p.proxy_id) });
           log(`🛑 [STOP_PROXY #${cmd.id}] ${res}`, 'warn');
+          try { await invoke('sync_and_start_tunnel'); } catch (e) {}
           await invoke('ack_command', { commandId: cmd.id, success: true, result: { message: res } });
         } else if (cmd.command === 'sync_adapters') {
           await refreshAdapters();
