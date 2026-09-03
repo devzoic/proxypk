@@ -389,41 +389,51 @@ async fn connect_outbound(
 
     for target_addr in &addrs {
         if let Some(local_ip) = bind_ip {
-            let bound_stream = match (local_ip, target_addr) {
-                (IpAddr::V4(v4), SocketAddr::V4(_)) => {
-                    if let Ok(s) = TcpSocket::new_v4() {
-                        if s.bind(SocketAddr::new(IpAddr::V4(v4), 0)).is_ok() {
-                            s.connect(*target_addr).await.ok()
+            let connect_fut = async {
+                match (local_ip, target_addr) {
+                    (IpAddr::V4(v4), SocketAddr::V4(_)) => {
+                        if let Ok(s) = TcpSocket::new_v4() {
+                            let _ = s.set_reuseaddr(true);
+                            let _ = s.set_nodelay(true);
+                            if s.bind(SocketAddr::new(IpAddr::V4(v4), 0)).is_ok() {
+                                s.connect(*target_addr).await.ok()
+                            } else {
+                                None
+                            }
                         } else {
                             None
                         }
-                    } else {
-                        None
                     }
-                }
-                (IpAddr::V6(v6), SocketAddr::V6(_)) => {
-                    if let Ok(s) = TcpSocket::new_v6() {
-                        if s.bind(SocketAddr::new(IpAddr::V6(v6), 0)).is_ok() {
-                            s.connect(*target_addr).await.ok()
+                    (IpAddr::V6(v6), SocketAddr::V6(_)) => {
+                        if let Ok(s) = TcpSocket::new_v6() {
+                            let _ = s.set_reuseaddr(true);
+                            let _ = s.set_nodelay(true);
+                            if s.bind(SocketAddr::new(IpAddr::V6(v6), 0)).is_ok() {
+                                s.connect(*target_addr).await.ok()
+                            } else {
+                                None
+                            }
                         } else {
                             None
                         }
-                    } else {
-                        None
                     }
+                    _ => None,
                 }
-                _ => None,
             };
 
-            if let Some(stream) = bound_stream {
+            // Limit binding handshake to 3.5s to prevent hanging on unresponsive cellular route
+            if let Ok(Some(stream)) = tokio::time::timeout(std::time::Duration::from_millis(3500), connect_fut).await {
+                let _ = stream.set_nodelay(true);
                 return Ok(stream);
             }
         }
 
-        // Connect directly if binding was not applicable or unbound
-        match TcpStream::connect(target_addr).await {
-            Ok(stream) => return Ok(stream),
-            Err(e) => last_err = Some(e),
+        // Direct connect fallback with 4s timeout
+        if let Ok(Ok(stream)) = tokio::time::timeout(std::time::Duration::from_millis(4000), TcpStream::connect(target_addr)).await {
+            let _ = stream.set_nodelay(true);
+            return Ok(stream);
+        } else {
+            last_err = Some(std::io::Error::new(std::io::ErrorKind::TimedOut, "TCP connect timed out"));
         }
     }
 
@@ -432,7 +442,7 @@ async fn connect_outbound(
         .unwrap_or_else(|| "Connection to all resolved target IPs failed".into()))
 }
 
-/// Bidirectional data transfer returning (bytes_sent_by_client, bytes_received_by_client)
+/// High-performance bidirectional data transfer utilizing Tokio zero-copy pipeline
 async fn relay_streams(
     mut client: TcpStream,
     mut target: TcpStream,
@@ -441,51 +451,11 @@ async fn relay_streams(
     let _ = client.set_nodelay(true);
     let _ = target.set_nodelay(true);
 
-    let (mut cr, mut cw) = client.split();
-    let (mut tr, mut tw) = target.split();
-
-    let bytes_a = bytes_counter.clone();
-    let client_sent = Arc::new(AtomicU64::new(0));
-    let sent_tracker = client_sent.clone();
-    let client_to_target = async move {
-        let mut buf = vec![0u8; 65536];
-        loop {
-            match cr.read(&mut buf).await {
-                Ok(0) => break,
-                Ok(n) => {
-                    if tw.write_all(&buf[..n]).await.is_err() {
-                        break;
-                    }
-                    bytes_a.fetch_add(n as u64, Ordering::Relaxed);
-                    sent_tracker.fetch_add(n as u64, Ordering::Relaxed);
-                }
-                Err(_) => break,
-            }
+    match tokio::io::copy_bidirectional(&mut client, &mut target).await {
+        Ok((from_client, from_target)) => {
+            bytes_counter.fetch_add(from_client + from_target, Ordering::Relaxed);
+            (from_client, from_target)
         }
-        let _ = tw.shutdown().await;
-    };
-
-    let bytes_b = bytes_counter.clone();
-    let client_recv = Arc::new(AtomicU64::new(0));
-    let recv_tracker = client_recv.clone();
-    let target_to_client = async move {
-        let mut buf = vec![0u8; 65536];
-        loop {
-            match tr.read(&mut buf).await {
-                Ok(0) => break,
-                Ok(n) => {
-                    if cw.write_all(&buf[..n]).await.is_err() {
-                        break;
-                    }
-                    bytes_b.fetch_add(n as u64, Ordering::Relaxed);
-                    recv_tracker.fetch_add(n as u64, Ordering::Relaxed);
-                }
-                Err(_) => break,
-            }
-        }
-        let _ = cw.shutdown().await;
-    };
-
-    tokio::join!(client_to_target, target_to_client);
-    (client_sent.load(Ordering::Relaxed), client_recv.load(Ordering::Relaxed))
+        Err(_) => (0, 0),
+    }
 }
