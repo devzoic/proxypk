@@ -434,6 +434,9 @@ async fn relay_streams(
     mut target: TcpStream,
     bytes_counter: Arc<AtomicU64>,
 ) -> (u64, u64) {
+    let _ = client.set_nodelay(true);
+    let _ = target.set_nodelay(true);
+
     let (mut cr, mut cw) = client.split();
     let (mut tr, mut tw) = target.split();
 
@@ -441,7 +444,7 @@ async fn relay_streams(
     let client_sent = Arc::new(AtomicU64::new(0));
     let sent_tracker = client_sent.clone();
     let client_to_target = async move {
-        let mut buf = [0u8; 8192];
+        let mut buf = vec![0u8; 65536];
         loop {
             match cr.read(&mut buf).await {
                 Ok(0) => break,
@@ -462,7 +465,7 @@ async fn relay_streams(
     let client_recv = Arc::new(AtomicU64::new(0));
     let recv_tracker = client_recv.clone();
     let target_to_client = async move {
-        let mut buf = [0u8; 8192];
+        let mut buf = vec![0u8; 65536];
         loop {
             match tr.read(&mut buf).await {
                 Ok(0) => break,
