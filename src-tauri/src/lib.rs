@@ -833,7 +833,13 @@ async fn sync_and_start_tunnel(state: State<'_, AppState>) -> Result<TunnelStatu
         guard.clone().ok_or_else(|| "Agent not connected to server".to_string())?
     };
 
-    let toml_text = client.get_tunnel_config().await?;
+    let mut toml_text = client.get_tunnel_config().await?;
+
+    // Robust hostname resolution: If server returned 127.0.0.1 or localhost, fallback to relay.devzoic.com
+    if toml_text.contains("127.0.0.1:2333") || toml_text.contains("localhost:2333") {
+        toml_text = toml_text.replace("127.0.0.1:2333", "relay.devzoic.com:2333")
+            .replace("localhost:2333", "relay.devzoic.com:2333");
+    }
 
     // Determine config path in current directory or temp
     let config_path = std::env::current_exe()
@@ -862,6 +868,20 @@ async fn sync_and_start_tunnel(state: State<'_, AppState>) -> Result<TunnelStatu
     }
 
     if !is_running {
+        // Terminate any detached stale rathole instances
+        #[cfg(target_os = "windows")]
+        {
+            let _ = create_hidden_command("taskkill")
+                .args(["/F", "/IM", "rathole.exe"])
+                .output();
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            let _ = create_hidden_command("killall")
+                .args(["-9", "rathole"])
+                .output();
+        }
+
         let config_str = config_path.to_str().unwrap_or("client.toml");
         if let Ok(child) = create_hidden_command(&exe_path)
             .args(["--client", config_str])
