@@ -9,6 +9,7 @@ use tokio::sync::broadcast;
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ProxyLogEntry {
     pub proxy_id: u64,
+    pub username: Option<String>,
     pub source_ip: Option<String>,
     pub destination_host: Option<String>,
     pub destination_port: Option<u16>,
@@ -194,12 +195,12 @@ async fn handle_socks5(
         let ulen = stream.read_u8().await? as usize;
         let mut u_bytes = vec![0u8; ulen];
         stream.read_exact(&mut u_bytes).await?;
-        let u = String::from_utf8_lossy(&u_bytes);
+        let u = String::from_utf8_lossy(&u_bytes).to_string();
 
         let plen = stream.read_u8().await? as usize;
         let mut p_bytes = vec![0u8; plen];
         stream.read_exact(&mut p_bytes).await?;
-        let p = String::from_utf8_lossy(&p_bytes);
+        let p = String::from_utf8_lossy(&p_bytes).to_string();
 
         if auth_user.as_deref() == Some(&u) && auth_pass.as_deref() == Some(&p) {
             stream.write_all(&[0x01, 0x00]).await?;
@@ -270,6 +271,7 @@ async fn handle_socks5(
 
     record_log(ProxyLogEntry {
         proxy_id,
+        username: auth_user.clone(),
         source_ip: Some(client_addr.ip().to_string()),
         destination_host: Some(target_host),
         destination_port: Some(target_port),
@@ -287,7 +289,7 @@ async fn handle_http_proxy(
     mut stream: TcpStream,
     client_addr: SocketAddr,
     proxy_id: u64,
-    _auth_user: Option<String>,
+    auth_user: Option<String>,
     _auth_pass: Option<String>,
     outbound_ip: Option<IpAddr>,
     bytes_counter: Arc<AtomicU64>,
@@ -321,6 +323,7 @@ async fn handle_http_proxy(
 
                 record_log(ProxyLogEntry {
                     proxy_id,
+                    username: auth_user.clone(),
                     source_ip: Some(client_addr.ip().to_string()),
                     destination_host: Some(dest_host),
                     destination_port: Some(dest_port),
@@ -353,6 +356,7 @@ async fn handle_http_proxy(
 
                 record_log(ProxyLogEntry {
                     proxy_id,
+                    username: auth_user.clone(),
                     source_ip: Some(client_addr.ip().to_string()),
                     destination_host: Some(host.to_string()),
                     destination_port: Some(80),
