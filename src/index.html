@@ -1409,8 +1409,8 @@
 
       heartbeatInterval = setInterval(sendHeartbeat, 60000);
       commandPollInterval = setInterval(pollCommands, 5000); // 5s poll for instant responsiveness
-      logFlushInterval = setInterval(flushProxyLogs, 4000); // 4s batch ship
-      proxyPollInterval = setInterval(loadRunningProxies, 3000); // 3s live proxy table update
+      logFlushInterval = setInterval(flushProxyLogs, 12000); // 12s async batch ship (zero latency impact)
+      proxyPollInterval = setInterval(loadRunningProxies, 5000); // 5s live proxy table update
     }
 
     // Auto-connect on startup

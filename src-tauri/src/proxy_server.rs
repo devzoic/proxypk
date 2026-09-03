@@ -62,6 +62,8 @@ impl ProxyInstance {
     ) -> Result<Self, String> {
         let socket = TcpSocket::new_v4().map_err(|e| format!("Socket creation error: {}", e))?;
         let _ = socket.set_reuseaddr(true);
+        let _ = socket.set_recv_buffer_size(2 * 1024 * 1024);
+        let _ = socket.set_send_buffer_size(2 * 1024 * 1024);
         #[cfg(unix)]
         let _ = socket.set_reuseport(true);
 
@@ -437,6 +439,8 @@ async fn connect_outbound(
                         if let Ok(s) = TcpSocket::new_v4() {
                             let _ = s.set_reuseaddr(true);
                             let _ = s.set_nodelay(true);
+                            let _ = s.set_recv_buffer_size(2 * 1024 * 1024);
+                            let _ = s.set_send_buffer_size(2 * 1024 * 1024);
                             if s.bind(SocketAddr::new(IpAddr::V4(v4), 0)).is_ok() {
                                 s.connect(*target_addr).await.ok()
                             } else {
@@ -450,6 +454,8 @@ async fn connect_outbound(
                         if let Ok(s) = TcpSocket::new_v6() {
                             let _ = s.set_reuseaddr(true);
                             let _ = s.set_nodelay(true);
+                            let _ = s.set_recv_buffer_size(2 * 1024 * 1024);
+                            let _ = s.set_send_buffer_size(2 * 1024 * 1024);
                             if s.bind(SocketAddr::new(IpAddr::V6(v6), 0)).is_ok() {
                                 s.connect(*target_addr).await.ok()
                             } else {
@@ -484,7 +490,7 @@ async fn connect_outbound(
         .unwrap_or_else(|| "Connection to all resolved target IPs failed".into()))
 }
 
-/// High-performance bidirectional data transfer utilizing Tokio zero-copy pipeline
+/// High-performance bidirectional data transfer utilizing 64KB high-speed stream buffers
 async fn relay_streams(
     mut client: TcpStream,
     mut target: TcpStream,
@@ -493,7 +499,7 @@ async fn relay_streams(
     let _ = client.set_nodelay(true);
     let _ = target.set_nodelay(true);
 
-    match tokio::io::copy_bidirectional(&mut client, &mut target).await {
+    match tokio::io::copy_bidirectional_with_sizes(&mut client, &mut target, 65536, 65536).await {
         Ok((from_client, from_target)) => {
             bytes_counter.fetch_add(from_client + from_target, Ordering::Relaxed);
             (from_client, from_target)
