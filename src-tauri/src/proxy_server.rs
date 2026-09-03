@@ -329,12 +329,16 @@ async fn handle_http_proxy(
     let req_str = String::from_utf8_lossy(&buf[..n]);
     let first_line = req_str.lines().next().unwrap_or("");
 
-    // Extract authenticated username from Proxy-Authorization header if provided by client
+    // Extract authenticated username and source IP from headers
     let mut client_user = auth_user.clone();
+    let mut detected_source_ip = client_addr.ip().to_string();
+
     for line in req_str.lines() {
         let trimmed = line.trim();
-        if trimmed.to_ascii_lowercase().starts_with("proxy-authorization:") {
-            if let Some(pos) = trimmed.to_ascii_lowercase().find("basic ") {
+        let lower = trimmed.to_ascii_lowercase();
+
+        if lower.starts_with("proxy-authorization:") {
+            if let Some(pos) = lower.find("basic ") {
                 let encoded = trimmed[pos + 6..].trim();
                 if let Some(decoded) = decode_base64(encoded) {
                     if let Ok(cred_str) = String::from_utf8(decoded) {
@@ -342,6 +346,13 @@ async fn handle_http_proxy(
                             client_user = Some(u.to_string());
                         }
                     }
+                }
+            }
+        } else if lower.starts_with("x-forwarded-for:") || lower.starts_with("x-real-ip:") {
+            if let Some((_, ip_val)) = trimmed.split_once(':') {
+                let first_ip = ip_val.split(',').next().unwrap_or("").trim();
+                if !first_ip.is_empty() {
+                    detected_source_ip = first_ip.to_string();
                 }
             }
         }
@@ -368,7 +379,7 @@ async fn handle_http_proxy(
                 record_log(ProxyLogEntry {
                     proxy_id,
                     username: client_user,
-                    source_ip: Some(client_addr.ip().to_string()),
+                    source_ip: Some(detected_source_ip),
                     destination_host: Some(dest_host),
                     destination_port: Some(dest_port),
                     bytes_sent,
@@ -378,14 +389,14 @@ async fn handle_http_proxy(
                 });
             }
             Err(e) => {
-                log::warn!("HTTP CONNECT outbound failed: {}", e);
+                log::warn!("CONNECT outbound error to {}: {}", target_addr, e);
                 let _ = stream.write_all(b"HTTP/1.1 502 Bad Gateway\r\n\r\n").await;
             }
         }
     } else {
-        // Plain HTTP proxy: parse host and forward
-        if let Some(host_line) = req_str.lines().find(|l| l.to_lowercase().starts_with("host:")) {
-            let host = host_line.split(':').nth(1).unwrap_or("").trim();
+        // Plain HTTP Request
+        if let Some(host_line) = req_str.lines().find(|l| l.to_ascii_lowercase().starts_with("host:")) {
+            let host = host_line.split_once(':').map(|(_, h)| h.trim()).unwrap_or("");
             let target_addr = if host.contains(':') {
                 host.to_string()
             } else {
@@ -401,7 +412,7 @@ async fn handle_http_proxy(
                 record_log(ProxyLogEntry {
                     proxy_id,
                     username: client_user,
-                    source_ip: Some(client_addr.ip().to_string()),
+                    source_ip: Some(detected_source_ip),
                     destination_host: Some(host.to_string()),
                     destination_port: Some(80),
                     bytes_sent: bytes_sent + n as u64,
