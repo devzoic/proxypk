@@ -22,14 +22,26 @@ struct HardwarePortMeta {
     pub adapter_type: String,
 }
 
+/// Creates a std::process::Command that runs completely silently in the background without opening a CMD or shell window on Windows
+#[allow(unused_mut)]
+fn create_hidden_command<S: AsRef<std::ffi::OsStr>>(program: S) -> std::process::Command {
+    let mut cmd = std::process::Command::new(program);
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+    }
+    cmd
+}
+
 /// Helper to query hardware ports and MAC addresses across Windows, Linux, and macOS
 fn get_hardware_adapters_map() -> HashMap<String, HardwarePortMeta> {
     let mut map = HashMap::new();
 
     #[cfg(target_os = "windows")]
     {
-        // Query PowerShell Get-NetAdapter for exact Name, InterfaceDescription, MacAddress, Status, MediaType
-        if let Ok(output) = std::process::Command::new("powershell")
+        // Query PowerShell Get-NetAdapter for exact Name, InterfaceDescription, MacAddress, Status, MediaType (SILENT)
+        if let Ok(output) = create_hidden_command("powershell")
             .args([
                 "-NoProfile",
                 "-Command",
@@ -741,7 +753,7 @@ async fn ensure_rathole_binary() -> Result<std::path::PathBuf, String> {
     }
 
     // Check system PATH
-    if let Ok(output) = std::process::Command::new(exe_name).arg("--version").output() {
+    if let Ok(output) = create_hidden_command(exe_name).arg("--version").output() {
         if output.status.success() {
             return Ok(std::path::PathBuf::from(exe_name));
         }
@@ -851,7 +863,7 @@ async fn sync_and_start_tunnel(state: State<'_, AppState>) -> Result<TunnelStatu
 
     if !is_running {
         let config_str = config_path.to_str().unwrap_or("client.toml");
-        if let Ok(child) = std::process::Command::new(&exe_path)
+        if let Ok(child) = create_hidden_command(&exe_path)
             .args(["--client", config_str])
             .spawn()
         {

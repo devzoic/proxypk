@@ -20,6 +20,9 @@
   <link rel="stylesheet" href="styles.css" />
 </head>
 <body>
+  <!-- Global Toast Notifications Container -->
+  <div id="toast-container" class="toast-container"></div>
+
   <div id="app">
     <!-- ─── Screen 1: Main Desktop Application ──────────────────── -->
     <div id="dashboard-screen" class="screen active">
@@ -90,9 +93,6 @@
           </div>
         </aside>
 
-        <!-- Toast Notifications Container -->
-        <div id="toast-container" class="toast-container"></div>
-
         <!-- ─── Main Content Canvas ───────────────────────────────── -->
         <div class="content-wrapper">
           <!-- Top App Bar -->
@@ -112,11 +112,11 @@
                 <i class="bi bi-lightning-charge-fill"></i>
                 <span>Test All Internet</span>
               </button>
-              <button class="btn-ghost-action" onclick="syncAdapters()" title="Sync all interfaces to server">
+              <button class="btn-ghost-action" onclick="syncAdapters(true)" title="Sync all interfaces to server">
                 <i class="bi bi-arrow-repeat"></i>
                 <span>Sync Server</span>
               </button>
-              <button class="btn-ghost-action" onclick="sendHeartbeat()" title="Send heartbeat pulse">
+              <button class="btn-ghost-action" onclick="sendHeartbeat(true)" title="Send heartbeat pulse">
                 <i class="bi bi-activity"></i>
                 <span>Heartbeat</span>
               </button>
@@ -302,7 +302,7 @@
                     <span class="toggle-label">Show Virtual Tunnels</span>
                   </label>
 
-                  <button class="btn-ghost-sm" onclick="refreshAdapters()" title="Refresh hardware interfaces">
+                  <button class="btn-ghost-sm" onclick="refreshAdapters(true)" title="Refresh hardware interfaces">
                     <i class="bi bi-arrow-clockwise"></i> Rescan
                   </button>
                 </div>
@@ -849,26 +849,38 @@
       }
     }
 
-    async function sendHeartbeat() {
+    async function sendHeartbeat(isManual = false) {
       try {
         const state = await invoke('send_heartbeat');
         updateApprovalUI(state.approved);
         document.getElementById('dash-cmd-count').textContent = state.pending_commands;
         document.getElementById('dash-last-ping').textContent = 'Last: ' + new Date().toLocaleTimeString();
         log('Heartbeat dispatched to control plane (Pending Tasks: ' + state.pending_commands + ')', 'success');
+        if (isManual) {
+          showToast('success', 'Heartbeat Dispatched', `Server acknowledged node (Pending tasks: ${state.pending_commands})`);
+        }
       } catch (e) {
         log('Heartbeat failed: ' + e, 'error');
+        if (isManual) {
+          showToast('error', 'Heartbeat Failed', String(e));
+        }
       }
     }
 
-    async function refreshAdapters() {
+    async function refreshAdapters(isManual = false) {
       try {
-        const includeVirtual = document.getElementById('toggle-virtual').checked;
+        const includeVirtual = document.getElementById('toggle-virtual')?.checked || false;
         cachedAdapters = await invoke('detect_adapters', { includeVirtual });
         renderAdapters();
         log(`Scanned network hardware: found ${cachedAdapters.length} adapter interface(s)`);
+        if (isManual) {
+          showToast('info', 'Hardware Scanned', `Found ${cachedAdapters.length} network interface(s)`);
+        }
       } catch (e) {
         log('Hardware scan failed: ' + e, 'error');
+        if (isManual) {
+          showToast('error', 'Hardware Scan Failed', String(e));
+        }
       }
     }
 
@@ -1146,7 +1158,7 @@
       await syncAdapters();
     }
 
-    async function syncAdapters() {
+    async function syncAdapters(isManual = false) {
       try {
         log('Syncing network adapters and public IP routes to server...');
         const payload = cachedAdapters.map(a => ({
@@ -1162,13 +1174,19 @@
 
         await invoke('sync_adapters', { adapters: payload });
         log('All network interfaces synced to ProxyPK server', 'success');
+        if (isManual) {
+          showToast('success', 'Server Synced', `${payload.length} network interface(s) synced to server`);
+        }
       } catch (e) {
         log('Sync failed: ' + e, 'error');
+        if (isManual) {
+          showToast('error', 'Sync Failed', String(e));
+        }
       }
     }
 
     async function syncSingleAdapter(adapterName) {
-      await syncAdapters();
+      await syncAdapters(true);
     }
 
     async function syncAndStartProxies(isManual = false) {
@@ -1179,7 +1197,7 @@
         if (res.success) {
           log(`✅ ${res.message}`, 'success');
           if (isManual) {
-            showToast('success', 'Proxies Synchronized', `${res.running_started} proxy listener(s) running.`);
+            showToast('success', 'Proxies Synchronized', `${res.running_started} proxy listener(s) active`);
           }
           const badge = document.getElementById('dash-tunnel-badge');
           if (badge && res.tunnel_status) {
@@ -1286,6 +1304,7 @@
       try {
         const res = await invoke('restart_tunnel');
         log(`✅ ${res.message}`, 'success');
+        showToast('success', 'Tunnel Restarted', res.message || 'Rathole reverse tunnel is actively routing in the background');
         const badge = document.getElementById('dash-tunnel-badge');
         if (badge) {
           badge.className = res.active ? 'badge-status badge-running' : 'badge-status badge-offline';
@@ -1296,6 +1315,7 @@
         await loadRunningProxies();
       } catch (e) {
         log(`❌ Failed to restart tunnel: ${e}`, 'error');
+        showToast('error', 'Tunnel Failed', String(e));
       }
     }
 
