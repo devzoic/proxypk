@@ -16,19 +16,31 @@ Download the latest installer for your operating system from [**GitHub Releases*
 2. Open the `.dmg` file and drag **ProxyPK Agent** into your **Applications** folder.
 3. Launch the application from Applications or Spotlight.
 
-### Linux (Ubuntu / Debian / AppImage)
+### Linux (Lubuntu / Ubuntu / Debian / Chromebook)
 
-#### AppImage (Portable)
+#### Option 1: Debian Package (.deb) — Recommended
 ```bash
-chmod +x ProxyPK.Agent_*.AppImage
-./ProxyPK.Agent_*.AppImage
+# 1. Download the latest .deb package directly from GitHub Releases
+wget https://github.com/devzoic/proxypk/releases/latest/download/proxypk-agent_amd64.deb -O proxypk.deb
+
+# 2. Install package (apt automatically installs required dependencies like WebKitGTK)
+sudo apt update
+sudo apt install -y ./proxypk.deb
+
+# 3. Launch ProxyPK
+proxypk-agent
 ```
 
-#### Debian Package (.deb)
+#### Option 2: Portable AppImage (.AppImage)
 ```bash
-sudo dpkg -i ProxyPK.Agent_*_amd64.deb
-sudo apt-get install -f
+# 1. Download AppImage
+wget https://github.com/devzoic/proxypk/releases/latest/download/proxypk-agent_amd64.AppImage -O ProxyPK.AppImage
+
+# 2. Make executable and run
+chmod +x ProxyPK.AppImage
+./ProxyPK.AppImage
 ```
+> *Note for Lubuntu / Ubuntu 24.04: If AppImage prompts for FUSE, run `sudo apt install -y libfuse2`.*
 
 ### Windows (10 / 11)
 1. Download the `.exe` setup installer or `.msi` package.
