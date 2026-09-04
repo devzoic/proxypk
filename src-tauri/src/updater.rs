@@ -179,19 +179,19 @@ fn install_and_restart(
 ) -> Result<(), String> {
     match os {
         "windows" => {
-            // Launch the Windows installer silently or standard and exit current agent
+            // Launch the Windows installer 100% silently with zero-click automation flags and exit current agent
             let installer_str = installer_path.to_string_lossy().to_string();
             
-            // InnoSetup / NSIS silent flags: /SILENT /VERYSILENT /SP- /NORESTART
+            // NSIS (/S) & InnoSetup (/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP-) silent automation flags
             let script = format!(
-                "timeout /t 1 /nobreak > NUL & start \"\" \"{}\" /SILENT",
+                "timeout /t 1 /nobreak > NUL & start \"\" \"{}\" /S /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP- /CLOSEAPPLICATIONS /FORCECLOSEAPPLICATIONS /NOCANCEL",
                 installer_str
             );
 
             std::process::Command::new("cmd")
                 .args(&["/C", &script])
                 .spawn()
-                .map_err(|e| format!("Failed to spawn Windows installer: {}", e))?;
+                .map_err(|e| format!("Failed to spawn Windows silent installer: {}", e))?;
 
             // Exit current process
             std::process::exit(0);

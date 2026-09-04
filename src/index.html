@@ -85,7 +85,7 @@
           <div class="sidebar-footer">
             <div class="footer-meta">
               <div class="footer-label">Control Plane</div>
-              <div class="footer-val text-truncate" id="sidebar-server-url">http://proxy.test</div>
+              <div class="footer-val text-truncate" id="sidebar-server-url">https://proxy.devzoic.com</div>
             </div>
             <div class="approval-badge-pill" id="sidebar-approval-pill">
               <i class="bi bi-shield-check"></i> <span id="sidebar-approval-text">Approved</span>
@@ -456,15 +456,23 @@
                   <div class="form-row">
                     <label>ProxyPK Server Endpoint URL</label>
                     <div style="display:flex;gap:8px;margin-bottom:8px;">
+                      <button type="button" class="btn-action-outline btn-action-sm" onclick="setEndpointPreset('https://proxy.devzoic.com')" style="font-size:11px;padding:4px 10px;">
+                        <i class="bi bi-cloud-check me-1"></i> Live Production (proxy.devzoic.com)
+                      </button>
                       <button type="button" class="btn-action-outline btn-action-sm" onclick="setEndpointPreset('http://proxy.test')" style="font-size:11px;padding:4px 10px;">
                         <i class="bi bi-laptop me-1"></i> Local Dev (proxy.test)
                       </button>
-                      <button type="button" class="btn-action-outline btn-action-sm" onclick="setEndpointPreset('https://proxy.devzoic.com')" style="font-size:11px;padding:4px 10px;">
-                        <i class="bi bi-cloud-check me-1"></i> Live Cloud (proxy.devzoic.com)
-                      </button>
                     </div>
-                    <input type="url" id="setting-server-url" class="form-input-lg" value="http://proxy.test" required />
-                    <span class="form-hint">The master Laravel control plane API address (defaults to proxy.test in dev or proxy.devzoic.com in live)</span>
+                    <input type="url" id="setting-server-url" class="form-input-lg" value="https://proxy.devzoic.com" required />
+                    <span class="form-hint">The master Laravel control plane API address (defaults to https://proxy.devzoic.com)</span>
+                  </div>
+
+                  <div class="form-row">
+                    <label style="display:flex;align-items:center;gap:10px;cursor:pointer;">
+                      <input type="checkbox" id="setting-auto-update" checked onchange="toggleAutoUpdateSetting(this.checked)" style="accent-color:var(--accent);width:16px;height:16px;cursor:pointer;" />
+                      <span>Zero-Click Background Auto-Updates</span>
+                    </label>
+                    <span class="form-hint">Automatically download and silently install verified updates from GitHub without user intervention.</span>
                   </div>
 
                   <div class="form-row">
@@ -624,6 +632,8 @@
       }
     }
 
+    const DEFAULT_PRODUCTION_URL = 'https://proxy.devzoic.com';
+
     function setEndpointPreset(url) {
       document.getElementById('setting-server-url').value = url;
       localStorage.setItem('proxypk_server_url', url);
@@ -633,7 +643,17 @@
     function getResolvedServerUrl() {
       const saved = localStorage.getItem('proxypk_server_url');
       if (saved) return saved;
-      return 'http://proxy.test';
+      return DEFAULT_PRODUCTION_URL;
+    }
+
+    function isAutoUpdateEnabled() {
+      const saved = localStorage.getItem('proxypk_auto_update');
+      return saved === null ? true : saved === 'true';
+    }
+
+    function toggleAutoUpdateSetting(enabled) {
+      localStorage.setItem('proxypk_auto_update', enabled ? 'true' : 'false');
+      log(`Zero-Click background auto-updates ${enabled ? 'enabled' : 'disabled'}`, 'info');
     }
 
     function log(msg, type = 'info') {
@@ -687,6 +707,7 @@
         // Settings inputs
         if (document.getElementById('setting-server-url')) document.getElementById('setting-server-url').value = url;
         if (document.getElementById('setting-machine-id')) document.getElementById('setting-machine-id').value = state.machine_id;
+        if (document.getElementById('setting-auto-update')) document.getElementById('setting-auto-update').checked = isAutoUpdateEnabled();
 
         // Dashboard overview stats
         if (document.getElementById('dash-hostname')) document.getElementById('dash-hostname').textContent = state.hostname;
@@ -704,15 +725,6 @@
         checkForUpdates(true); // silent background check
       } catch (e) {
         log(`Connection to ${url} failed: ${e}`, 'warn');
-        // If local dev endpoint failed and user hasn't explicitly set a custom URL, auto fallback to live
-        if (url === 'http://proxy.test' && !localStorage.getItem('proxypk_server_url')) {
-          log('Attempting fallback to live cloud endpoint: https://proxy.devzoic.com...', 'info');
-          try {
-            await connectToServer('https://proxy.devzoic.com');
-          } catch (err2) {
-            log(`Live cloud connection error: ${err2}`, 'error');
-          }
-        }
       }
     }
 
@@ -726,6 +738,8 @@
         }
       } catch (e) {}
     }
+
+    let isAutoUpdatingInProgress = false;
 
     async function checkForUpdates(silent = false) {
       const btn = document.getElementById('btn-check-updates');
@@ -761,7 +775,12 @@
           const badge = document.getElementById('nav-update-badge');
           if (badge) badge.style.display = 'inline-block';
 
-          if (!silent) log(`🎉 Update Available: Version ${res.version} is ready to install`, 'success');
+          if (!silent) {
+            log(`🎉 Update Available: Version ${res.version} is ready to install`, 'success');
+          } else if (isAutoUpdateEnabled() && !isAutoUpdatingInProgress) {
+            log(`⬇️ [Zero-Click OTA] New release v${res.version} detected. Downloading update in background...`, 'info');
+            downloadAndInstallUpdate(true);
+          }
         } else {
           document.getElementById('update-available-card').style.display = 'none';
           const pill = document.getElementById('update-status-pill');
@@ -789,7 +808,10 @@
 
     let unlistenUpdateProgress = null;
 
-    async function downloadAndInstallUpdate() {
+    async function downloadAndInstallUpdate(isBackground = false) {
+      if (isAutoUpdatingInProgress) return;
+      isAutoUpdatingInProgress = true;
+
       const btn = document.getElementById('btn-install-update');
       const prog = document.getElementById('update-progress-container');
       const bar = document.getElementById('update-progress-bar');
@@ -817,7 +839,7 @@
           });
         }
 
-        log('⬇️ Initiating automated in-app download and installation...', 'info');
+        log(isBackground ? '⬇️ [Zero-Click OTA] Streaming update payload in background...' : '⬇️ Initiating automated in-app download and installation...', 'info');
         const res = await invoke('download_and_install_update');
         
         if (bar) bar.style.width = '100%';
@@ -825,12 +847,13 @@
         if (lbl) lbl.textContent = 'Installation complete. Restarting...';
         log(`✅ ${res}`, 'success');
       } catch (e) {
-        if (prog) prog.style.display = 'none';
+        isAutoUpdatingInProgress = false;
+        if (prog && !isBackground) prog.style.display = 'none';
         if (btn) {
           btn.disabled = false;
           btn.innerHTML = '<i class="bi bi-download me-1"></i> Download & Restart Agent';
         }
-        log(`❌ Update error: ${e}`, 'error');
+        log(`❌ Update notice: ${e}`, 'error');
       }
     }
 
@@ -1396,12 +1419,14 @@
 
     let logFlushInterval = null;
     let proxyPollInterval = null;
+    let updateCheckInterval = null;
 
     function startIntervals() {
       if (heartbeatInterval) clearInterval(heartbeatInterval);
       if (commandPollInterval) clearInterval(commandPollInterval);
       if (logFlushInterval) clearInterval(logFlushInterval);
       if (proxyPollInterval) clearInterval(proxyPollInterval);
+      if (updateCheckInterval) clearInterval(updateCheckInterval);
 
       pollCommands();
       syncAndStartProxies();
@@ -1411,6 +1436,7 @@
       commandPollInterval = setInterval(pollCommands, 5000); // 5s poll for instant responsiveness
       logFlushInterval = setInterval(flushProxyLogs, 12000); // 12s async batch ship (zero latency impact)
       proxyPollInterval = setInterval(loadRunningProxies, 5000); // 5s live proxy table update
+      updateCheckInterval = setInterval(() => checkForUpdates(true), 1800000); // 30m background OTA update check
     }
 
     // Auto-connect on startup
