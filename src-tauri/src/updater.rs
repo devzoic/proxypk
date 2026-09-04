@@ -179,51 +179,80 @@ fn install_and_restart(
 ) -> Result<(), String> {
     match os {
         "windows" => {
-            // Launch the Windows installer 100% silently with zero-click automation flags and exit current agent
-            let installer_str = installer_path.to_string_lossy().to_string();
-            
-            // NSIS (/S) & InnoSetup (/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP-) silent automation flags
-            let script = format!(
-                "timeout /t 1 /nobreak > NUL & start \"\" \"{}\" /S /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP- /CLOSEAPPLICATIONS /FORCECLOSEAPPLICATIONS /NOCANCEL",
-                installer_str
-            );
+            // Direct native execution bypassing cmd.exe / start "" quoting bugs
+            let ext = installer_path.extension().and_then(|s| s.to_str()).unwrap_or("").to_lowercase();
 
-            std::process::Command::new("cmd")
-                .args(&["/C", &script])
-                .spawn()
-                .map_err(|e| format!("Failed to spawn Windows silent installer: {}", e))?;
+            if ext == "msi" {
+                let mut cmd = std::process::Command::new("msiexec");
+                cmd.arg("/i")
+                    .arg(&installer_path)
+                    .arg("/qn")
+                    .arg("/norestart");
 
-            // Exit current process
+                #[cfg(target_os = "windows")]
+                {
+                    use std::os::windows::process::CommandExt;
+                    cmd.creation_flags(0x08000000 | 0x00000200); // CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP
+                }
+
+                cmd.spawn().map_err(|e| format!("Failed to spawn MSI installer: {}", e))?;
+            } else {
+                // NSIS Setup Installer (e.g. ProxyPK.Agent_x64-setup.exe)
+                let mut cmd = std::process::Command::new(&installer_path);
+                cmd.arg("/S"); // NSIS 100% silent flag
+
+                #[cfg(target_os = "windows")]
+                {
+                    use std::os::windows::process::CommandExt;
+                    cmd.creation_flags(0x08000000 | 0x00000200); // CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP
+                }
+
+                cmd.spawn().map_err(|e| format!("Failed to spawn setup installer: {}", e))?;
+            }
+
+            // Brief sleep to allow installer process initialization before exiting current agent
+            std::thread::sleep(std::time::Duration::from_millis(600));
             std::process::exit(0);
         }
         "linux" => {
-            // On Linux AppImage: Replace the running AppImage file atomically or run new one
             #[cfg(unix)]
             {
-                use std::os::unix::fs::PermissionsExt;
-                let mut perms = std::fs::metadata(&installer_path)
-                    .map_err(|e| format!("Failed to read metadata: {}", e))?
-                    .permissions();
-                perms.set_mode(0o755);
-                std::fs::set_permissions(&installer_path, perms)
-                    .map_err(|e| format!("Failed to set executable permissions: {}", e))?;
+                let ext = installer_path.extension().and_then(|s| s.to_str()).unwrap_or("").to_lowercase();
 
-                // If running as AppImage, replace original AppImage
-                if let Ok(appimage_path) = std::env::var("APPIMAGE") {
-                    let dest = PathBuf::from(appimage_path);
-                    let _ = std::fs::copy(&installer_path, &dest);
-                    
-                    std::process::Command::new(&dest)
+                if ext == "deb" {
+                    // Debian package installer
+                    let _ = std::process::Command::new("pkexec")
+                        .args(&["dpkg", "-i", installer_path.to_str().unwrap_or("")])
                         .spawn()
-                        .map_err(|e| format!("Failed to restart new AppImage: {}", e))?;
-                    
+                        .map_err(|e| format!("Failed to run dpkg installer: {}", e))?;
+
+                    std::thread::sleep(std::time::Duration::from_millis(500));
                     std::process::exit(0);
                 } else {
-                    // Direct binary / AppImage spawn
-                    std::process::Command::new(&installer_path)
-                        .spawn()
-                        .map_err(|e| format!("Failed to launch updated binary: {}", e))?;
-                    std::process::exit(0);
+                    // AppImage / ELF binary execution with atomic swap
+                    use std::os::unix::fs::PermissionsExt;
+                    let mut perms = std::fs::metadata(&installer_path)
+                        .map_err(|e| format!("Failed to read metadata: {}", e))?
+                        .permissions();
+                    perms.set_mode(0o755);
+                    std::fs::set_permissions(&installer_path, perms)
+                        .map_err(|e| format!("Failed to set executable permissions: {}", e))?;
+
+                    if let Ok(appimage_path) = std::env::var("APPIMAGE") {
+                        let dest = PathBuf::from(appimage_path);
+                        let _ = std::fs::copy(&installer_path, &dest);
+
+                        std::process::Command::new(&dest)
+                            .spawn()
+                            .map_err(|e| format!("Failed to restart updated AppImage: {}", e))?;
+
+                        std::process::exit(0);
+                    } else {
+                        std::process::Command::new(&installer_path)
+                            .spawn()
+                            .map_err(|e| format!("Failed to launch updated binary: {}", e))?;
+                        std::process::exit(0);
+                    }
                 }
             }
 
@@ -233,13 +262,27 @@ fn install_and_restart(
             }
         }
         "macos" => {
-            // On macOS, open the DMG or installer
-            std::process::Command::new("open")
-                .arg(&installer_path)
-                .spawn()
-                .map_err(|e| format!("Failed to open macOS installer: {}", e))?;
+            let is_tar_gz = installer_path.to_string_lossy().ends_with(".tar.gz");
+            if is_tar_gz {
+                // Extract app bundle directly into /Applications
+                let _ = std::process::Command::new("tar")
+                    .args(&["-xzf", installer_path.to_str().unwrap_or(""), "-C", "/Applications"])
+                    .output();
 
-            std::process::exit(0);
+                std::process::Command::new("open")
+                    .args(&["-n", "/Applications/ProxyPK Agent.app"])
+                    .spawn()
+                    .map_err(|e| format!("Failed to open updated macOS app: {}", e))?;
+
+                std::process::exit(0);
+            } else {
+                std::process::Command::new("open")
+                    .arg(&installer_path)
+                    .spawn()
+                    .map_err(|e| format!("Failed to open macOS installer: {}", e))?;
+
+                std::process::exit(0);
+            }
         }
         _ => return Err(format!("Unsupported operating system: {}", os)),
     }
