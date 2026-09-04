@@ -540,9 +540,39 @@ async fn start_proxy_server(
     protocol: Option<String>,
     username: Option<String>,
     password: Option<String>,
+    authorized_users: Option<Vec<models::AuthorizedUser>>,
     adapter_ip: Option<String>,
     state: State<'_, AppState>,
 ) -> Result<String, String> {
+    let mut auth_list = authorized_users.unwrap_or_default();
+    if auth_list.is_empty() {
+        if let (Some(u), Some(p)) = (username, password) {
+            if !u.trim().is_empty() {
+                auth_list.push(models::AuthorizedUser {
+                    username: u,
+                    password: p,
+                    user_id: None,
+                    subscription_id: None,
+                });
+            }
+        }
+    }
+
+    let proto = protocol.unwrap_or_else(|| "socks5".to_string());
+    let bind_ip = adapter_ip.and_then(|ip| ip.parse::<std::net::IpAddr>().ok());
+
+    // If already running on the same port and IP, update credentials dynamically in RAM without restart
+    {
+        let guard = state.running_proxies.lock().unwrap();
+        if let Some(instance) = guard.get(&proxy_id) {
+            if instance.port == port && instance.bind_adapter_ip == bind_ip {
+                instance.update_authorized_users(auth_list);
+                log::info!("Updated in-memory credentials for proxy server #{} on port {}", proxy_id, port);
+                return Ok(format!("Proxy #{} credentials updated on port {}", proxy_id, port));
+            }
+        }
+    }
+
     // If a proxy with this proxy_id or port is already running in state, stop it first
     {
         let mut guard = state.running_proxies.lock().unwrap();
@@ -563,15 +593,11 @@ async fn start_proxy_server(
         }
     }
 
-    let proto = protocol.unwrap_or_else(|| "socks5".to_string());
-    let bind_ip = adapter_ip.and_then(|ip| ip.parse::<std::net::IpAddr>().ok());
-
     let instance = proxy_server::ProxyInstance::start(
         proxy_id,
         port,
         proto.clone(),
-        username,
-        password,
+        auth_list,
         bind_ip,
     )
     .await?;
@@ -1006,6 +1032,7 @@ async fn fetch_and_start_proxies(state: State<'_, AppState>) -> Result<FetchProx
     let proxies = data["proxies"].as_array().cloned().unwrap_or_default();
     let total_count = proxies.len();
     let mut started_count = 0;
+    let mut active_proxy_ids = std::collections::HashSet::new();
 
     for p in &proxies {
         let status = p["status"].as_str().unwrap_or("");
@@ -1013,15 +1040,61 @@ async fn fetch_and_start_proxies(state: State<'_, AppState>) -> Result<FetchProx
             let proxy_id = p["id"].as_u64().unwrap_or(0);
             let port = p["local_port"].as_u64().unwrap_or(0) as u16;
             let protocol = p["protocol"].as_str().map(|s| s.to_string());
-            let username = p["username"].as_str().map(|s| s.to_string());
-            let password = p["password"].as_str().map(|s| s.to_string());
             let adapter_ip = p["network_adapter"]["local_ip"].as_str().map(|s| s.to_string());
 
+            let mut auth_users: Vec<models::AuthorizedUser> = Vec::new();
+            if let Some(arr) = p["authorized_users"].as_array() {
+                for u_val in arr {
+                    if let (Some(u), Some(pw)) = (u_val["username"].as_str(), u_val["password"].as_str()) {
+                        auth_users.push(models::AuthorizedUser {
+                            username: u.to_string(),
+                            password: pw.to_string(),
+                            user_id: u_val["user_id"].as_u64(),
+                            subscription_id: u_val["subscription_id"].as_u64(),
+                        });
+                    }
+                }
+            }
+
+            if auth_users.is_empty() {
+                if let (Some(u), Some(pw)) = (p["username"].as_str(), p["password"].as_str()) {
+                    if !u.trim().is_empty() {
+                        auth_users.push(models::AuthorizedUser {
+                            username: u.to_string(),
+                            password: pw.to_string(),
+                            user_id: None,
+                            subscription_id: None,
+                        });
+                    }
+                }
+            }
+
             if port > 0 {
+                active_proxy_ids.insert(proxy_id);
                 let bind_ip = adapter_ip.and_then(|ip| ip.parse::<std::net::IpAddr>().ok());
                 let proto = protocol.unwrap_or_else(|| "both".to_string());
 
-                // Stop duplicate if running
+                // Check if already running on same port and adapter
+                let already_running = {
+                    let guard = state.running_proxies.lock().unwrap();
+                    if let Some(instance) = guard.get(&proxy_id) {
+                        if instance.port == port && instance.bind_adapter_ip == bind_ip {
+                            instance.update_authorized_users(auth_users.clone());
+                            true
+                        } else {
+                            false
+                        }
+                    } else {
+                        false
+                    }
+                };
+
+                if already_running {
+                    started_count += 1;
+                    continue;
+                }
+
+                // Stop duplicate / old instance if running
                 {
                     let mut guard = state.running_proxies.lock().unwrap();
                     if let Some(existing) = guard.remove(&proxy_id) {
@@ -1033,14 +1106,29 @@ async fn fetch_and_start_proxies(state: State<'_, AppState>) -> Result<FetchProx
                     proxy_id,
                     port,
                     proto,
-                    username,
-                    password,
+                    auth_users,
                     bind_ip,
                 ).await {
                     let mut guard = state.running_proxies.lock().unwrap();
                     guard.insert(proxy_id, instance);
                     started_count += 1;
                 }
+            }
+        }
+    }
+
+    // Stop any proxies that were deleted or marked stopped in Laravel
+    {
+        let mut guard = state.running_proxies.lock().unwrap();
+        let to_remove: Vec<u64> = guard.keys()
+            .copied()
+            .filter(|id| !active_proxy_ids.contains(id))
+            .collect();
+
+        for id in to_remove {
+            if let Some(instance) = guard.remove(&id) {
+                instance.stop();
+                log::info!("Stopped decommissioned proxy #{}", id);
             }
         }
     }

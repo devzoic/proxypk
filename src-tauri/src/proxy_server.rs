@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpSocket, TcpStream};
@@ -102,8 +102,7 @@ pub struct ProxyInstance {
     pub proxy_id: u64,
     pub port: u16,
     pub protocol: String,
-    pub username: Option<String>,
-    pub password: Option<String>,
+    pub authorized_users: Arc<RwLock<HashMap<String, String>>>,
     pub bind_adapter_ip: Option<IpAddr>,
     pub shutdown_tx: broadcast::Sender<()>,
     pub active_connections: Arc<AtomicU64>,
@@ -116,8 +115,7 @@ impl ProxyInstance {
         proxy_id: u64,
         port: u16,
         protocol: String,
-        username: Option<String>,
-        password: Option<String>,
+        authorized_users_list: Vec<crate::models::AuthorizedUser>,
         bind_adapter_ip: Option<IpAddr>,
     ) -> Result<Self, String> {
         let socket = TcpSocket::new_v4().map_err(|e| format!("Socket creation error: {}", e))?;
@@ -138,12 +136,19 @@ impl ProxyInstance {
         let bytes_transferred = Arc::new(AtomicU64::new(0));
         let is_running = Arc::new(AtomicBool::new(true));
 
+        let mut user_map = HashMap::new();
+        for u in authorized_users_list {
+            if !u.username.trim().is_empty() {
+                user_map.insert(u.username.trim().to_string(), u.password.trim().to_string());
+            }
+        }
+        let authorized_users = Arc::new(RwLock::new(user_map));
+
         let mut shutdown_rx = shutdown_tx.subscribe();
         let running_flag = is_running.clone();
         let active_conns = active_connections.clone();
         let total_bytes = bytes_transferred.clone();
-        let auth_user = username.clone();
-        let auth_pass = password.clone();
+        let auth_creds = authorized_users.clone();
         let adapter_ip = bind_adapter_ip;
 
         tokio::spawn(async move {
@@ -155,14 +160,13 @@ impl ProxyInstance {
                                 let _ = stream.set_nodelay(true);
                                 let conns = active_conns.clone();
                                 let bytes = total_bytes.clone();
-                                let u = auth_user.clone();
-                                let p = auth_pass.clone();
+                                let creds = auth_creds.clone();
                                 let outbound_ip = adapter_ip;
 
                                 conns.fetch_add(1, Ordering::SeqCst);
 
                                 tokio::spawn(async move {
-                                    let _ = handle_connection(stream, client_addr, proxy_id, u, p, outbound_ip, bytes).await;
+                                    let _ = handle_connection(stream, client_addr, proxy_id, creds, outbound_ip, bytes).await;
                                     conns.fetch_sub(1, Ordering::SeqCst);
                                 });
                             }
@@ -184,14 +188,24 @@ impl ProxyInstance {
             proxy_id,
             port,
             protocol,
-            username,
-            password,
+            authorized_users,
             bind_adapter_ip,
             shutdown_tx,
             active_connections,
             bytes_transferred,
             is_running,
         })
+    }
+
+    pub fn update_authorized_users(&self, users: Vec<crate::models::AuthorizedUser>) {
+        if let Ok(mut guard) = self.authorized_users.write() {
+            guard.clear();
+            for u in users {
+                if !u.username.trim().is_empty() {
+                    guard.insert(u.username.trim().to_string(), u.password.trim().to_string());
+                }
+            }
+        }
     }
 
     pub fn stop(&self) {
@@ -205,8 +219,7 @@ async fn handle_connection(
     stream: TcpStream,
     client_addr: SocketAddr,
     proxy_id: u64,
-    auth_user: Option<String>,
-    auth_pass: Option<String>,
+    auth_creds: Arc<RwLock<HashMap<String, String>>>,
     outbound_ip: Option<IpAddr>,
     bytes_counter: Arc<AtomicU64>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -219,10 +232,10 @@ async fn handle_connection(
 
     if peek_buf[0] == 0x05 {
         // SOCKS5 Protocol
-        handle_socks5(stream, client_addr, proxy_id, auth_user, auth_pass, outbound_ip, bytes_counter).await
+        handle_socks5(stream, client_addr, proxy_id, auth_creds, outbound_ip, bytes_counter).await
     } else {
         // HTTP / HTTPS Connect Protocol
-        handle_http_proxy(stream, client_addr, proxy_id, auth_user, auth_pass, outbound_ip, bytes_counter).await
+        handle_http_proxy(stream, client_addr, proxy_id, auth_creds, outbound_ip, bytes_counter).await
     }
 }
 
@@ -231,8 +244,7 @@ async fn handle_socks5(
     mut stream: TcpStream,
     client_addr: SocketAddr,
     proxy_id: u64,
-    auth_user: Option<String>,
-    _auth_pass: Option<String>,
+    auth_creds: Arc<RwLock<HashMap<String, String>>>,
     outbound_ip: Option<IpAddr>,
     bytes_counter: Arc<AtomicU64>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -242,38 +254,75 @@ async fn handle_socks5(
     let mut methods = vec![0u8; nmethods];
     stream.read_exact(&mut methods).await?;
 
-    let mut client_user = auth_user.clone();
+    let is_auth_required = {
+        let guard = auth_creds.read().map_err(|_| "Lock poisoned")?;
+        !guard.is_empty()
+    };
 
-    // Check if client requested User/Password authentication (RFC 1929)
-    if methods.contains(&0x02) {
+    let mut client_user: Option<String> = None;
+
+    if is_auth_required {
+        // If credentials are required, client MUST authenticate with Username/Password (RFC 1929)
+        if !methods.contains(&0x02) {
+            // No acceptable auth methods
+            stream.write_all(&[0x05, 0xFF]).await?;
+            return Ok(());
+        }
+
+        // Tell client to authenticate via Username/Password (0x02)
         stream.write_all(&[0x05, 0x02]).await?;
 
-        // Read user/pass auth (RFC 1929)
-        let mut auth_ver = [0u8; 1];
-        stream.read_exact(&mut auth_ver).await?;
+        // Read subnegotiation version (RFC 1929: 0x01)
+        let auth_ver = stream.read_u8().await?;
+        if auth_ver != 0x01 {
+            stream.write_all(&[0x01, 0xFF]).await?;
+            return Ok(());
+        }
+
         let ulen = stream.read_u8().await? as usize;
         let mut u_bytes = vec![0u8; ulen];
         stream.read_exact(&mut u_bytes).await?;
-        let u = String::from_utf8_lossy(&u_bytes).to_string();
+        let u = String::from_utf8_lossy(&u_bytes).trim().to_string();
 
         let plen = stream.read_u8().await? as usize;
         let mut p_bytes = vec![0u8; plen];
         stream.read_exact(&mut p_bytes).await?;
-        let _p = String::from_utf8_lossy(&p_bytes).to_string();
+        let p = String::from_utf8_lossy(&p_bytes).trim().to_string();
 
-        if !u.is_empty() {
-            client_user = Some(u);
+        let is_valid = {
+            let guard = auth_creds.read().map_err(|_| "Lock poisoned")?;
+            guard.get(&u) == Some(&p)
+        };
+
+        if !is_valid {
+            // RFC 1929: 0x01 (version), 0xFF (failure)
+            stream.write_all(&[0x01, 0xFF]).await?;
+            return Ok(());
         }
 
-        // Return SOCKS5 authentication success
+        client_user = Some(u);
+        // RFC 1929: 0x01 (version), 0x00 (success)
         stream.write_all(&[0x01, 0x00]).await?;
-    } else if methods.contains(&0x00) {
-        // No authentication required
-        stream.write_all(&[0x05, 0x00]).await?;
     } else {
-        // No acceptable auth methods
-        stream.write_all(&[0x05, 0xFF]).await?;
-        return Ok(());
+        // No authentication required
+        if methods.contains(&0x00) {
+            stream.write_all(&[0x05, 0x00]).await?;
+        } else if methods.contains(&0x02) {
+            stream.write_all(&[0x05, 0x02]).await?;
+            let _ = stream.read_u8().await?;
+            let ulen = stream.read_u8().await? as usize;
+            let mut u_bytes = vec![0u8; ulen];
+            stream.read_exact(&mut u_bytes).await?;
+            let u = String::from_utf8_lossy(&u_bytes).trim().to_string();
+            let plen = stream.read_u8().await? as usize;
+            let mut p_bytes = vec![0u8; plen];
+            stream.read_exact(&mut p_bytes).await?;
+            client_user = Some(u);
+            stream.write_all(&[0x01, 0x00]).await?;
+        } else {
+            stream.write_all(&[0x05, 0xFF]).await?;
+            return Ok(());
+        }
     }
 
     // Read Request
@@ -375,8 +424,7 @@ async fn handle_http_proxy(
     mut stream: TcpStream,
     client_addr: SocketAddr,
     proxy_id: u64,
-    auth_user: Option<String>,
-    _auth_pass: Option<String>,
+    auth_creds: Arc<RwLock<HashMap<String, String>>>,
     outbound_ip: Option<IpAddr>,
     bytes_counter: Arc<AtomicU64>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -389,9 +437,14 @@ async fn handle_http_proxy(
     let req_str = String::from_utf8_lossy(&buf[..n]);
     let first_line = req_str.lines().next().unwrap_or("");
 
-    // Extract authenticated username and source IP from headers
-    let mut client_user = auth_user.clone();
+    let is_auth_required = {
+        let guard = auth_creds.read().map_err(|_| "Lock poisoned")?;
+        !guard.is_empty()
+    };
+
+    let mut client_user: Option<String> = None;
     let mut detected_source_ip = client_addr.ip().to_string();
+    let mut is_authenticated = !is_auth_required;
 
     for line in req_str.lines() {
         let trimmed = line.trim();
@@ -402,8 +455,18 @@ async fn handle_http_proxy(
                 let encoded = trimmed[pos + 6..].trim();
                 if let Some(decoded) = decode_base64(encoded) {
                     if let Ok(cred_str) = String::from_utf8(decoded) {
-                        if let Some((u, _)) = cred_str.split_once(':') {
-                            client_user = Some(u.to_string());
+                        if let Some((u, p)) = cred_str.split_once(':') {
+                            let u_clean = u.trim();
+                            let p_clean = p.trim();
+                            if is_auth_required {
+                                let guard = auth_creds.read().map_err(|_| "Lock poisoned")?;
+                                if guard.get(u_clean) == Some(&p_clean.to_string()) {
+                                    is_authenticated = true;
+                                    client_user = Some(u_clean.to_string());
+                                }
+                            } else {
+                                client_user = Some(u_clean.to_string());
+                            }
                         }
                     }
                 }
@@ -416,6 +479,13 @@ async fn handle_http_proxy(
                 }
             }
         }
+    }
+
+    if is_auth_required && !is_authenticated {
+        // Return HTTP 407 Proxy Authentication Required
+        let res = b"HTTP/1.1 407 Proxy Authentication Required\r\nProxy-Authenticate: Basic realm=\"ProxyPK\"\r\nContent-Type: text/plain\r\nContent-Length: 32\r\nConnection: close\r\n\r\nProxy Authentication Required.\r\n";
+        let _ = stream.write_all(res).await;
+        return Ok(());
     }
 
     if first_line.starts_with("CONNECT ") {

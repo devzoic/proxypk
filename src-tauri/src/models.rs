@@ -144,3 +144,15 @@ impl Default for AgentState {
         }
     }
 }
+
+/// Authorized proxy credentials
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuthorizedUser {
+    pub username: String,
+    pub password: String,
+    #[serde(default)]
+    pub user_id: Option<u64>,
+    #[serde(default)]
+    pub subscription_id: Option<u64>,
+}
+

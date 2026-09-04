@@ -1381,6 +1381,7 @@
             protocol: p.protocol || 'socks5',
             username: p.username || null,
             password: p.password || null,
+            authorizedUsers: p.authorized_users || null,
             adapterIp: p.adapter_ip || null
           });
           log(`🚀 [START_PROXY #${cmd.id}] ${res}`, 'success');
@@ -1419,6 +1420,7 @@
 
     let logFlushInterval = null;
     let proxyPollInterval = null;
+    let proxySyncInterval = null;
     let updateCheckInterval = null;
 
     function startIntervals() {
@@ -1426,6 +1428,7 @@
       if (commandPollInterval) clearInterval(commandPollInterval);
       if (logFlushInterval) clearInterval(logFlushInterval);
       if (proxyPollInterval) clearInterval(proxyPollInterval);
+      if (proxySyncInterval) clearInterval(proxySyncInterval);
       if (updateCheckInterval) clearInterval(updateCheckInterval);
 
       pollCommands();
@@ -1436,6 +1439,7 @@
       commandPollInterval = setInterval(pollCommands, 5000); // 5s poll for instant responsiveness
       logFlushInterval = setInterval(flushProxyLogs, 12000); // 12s async batch ship (zero latency impact)
       proxyPollInterval = setInterval(loadRunningProxies, 5000); // 5s live proxy table update
+      proxySyncInterval = setInterval(syncAndStartProxies, 30000); // 30s background proxy & credentials sync
       updateCheckInterval = setInterval(() => checkForUpdates(true), 1800000); // 30m background OTA update check
     }
 
