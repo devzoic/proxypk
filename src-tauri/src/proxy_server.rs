@@ -1,6 +1,8 @@
+use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpSocket, TcpStream};
 use tokio::sync::broadcast;
@@ -23,7 +25,7 @@ static PENDING_LOGS: Mutex<Vec<ProxyLogEntry>> = Mutex::new(Vec::new());
 
 pub fn record_log(entry: ProxyLogEntry) {
     if let Ok(mut logs) = PENDING_LOGS.lock() {
-        if logs.len() < 5000 {
+        if logs.len() < 10000 {
             logs.push(entry);
         }
     }
@@ -35,6 +37,64 @@ pub fn drain_logs() -> Vec<ProxyLogEntry> {
     } else {
         Vec::new()
     }
+}
+
+/// In-Memory Thread-Safe High-Performance Asynchronous DNS Cache (60s TTL)
+/// Bypasses repetitive DNS queries during multi-stream speedtests and web scraping.
+struct DnsCacheEntry {
+    addresses: Vec<SocketAddr>,
+    expires_at: Instant,
+}
+
+static DNS_CACHE: Mutex<Option<HashMap<String, DnsCacheEntry>>> = Mutex::new(None);
+
+async fn resolve_host_cached(target: &str) -> Result<Vec<SocketAddr>, Box<dyn std::error::Error + Send + Sync>> {
+    let now = Instant::now();
+
+    // 1. Check RAM Cache
+    if let Ok(guard) = DNS_CACHE.lock() {
+        if let Some(ref cache) = *guard {
+            if let Some(entry) = cache.get(target) {
+                if entry.expires_at > now {
+                    return Ok(entry.addresses.clone());
+                }
+            }
+        }
+    }
+
+    // 2. Perform Network DNS Lookup with 2.5s Timeout
+    let lookup_fut = tokio::net::lookup_host(target);
+    let resolved: Vec<SocketAddr> = match tokio::time::timeout(Duration::from_millis(2500), lookup_fut).await {
+        Ok(Ok(addrs)) => addrs.collect(),
+        Ok(Err(e)) => return Err(Box::new(e)),
+        Err(_) => return Err("DNS resolution timed out".into()),
+    };
+
+    if resolved.is_empty() {
+        return Err("No IP addresses found for host".into());
+    }
+
+    // 3. Sort: Prioritize IPv4 for mobile dongles & residential carrier compatibility
+    let mut sorted_addrs = resolved;
+    sorted_addrs.sort_by_key(|a| if a.is_ipv4() { 0 } else { 1 });
+
+    // 4. Save to Cache with 60-second TTL
+    if let Ok(mut guard) = DNS_CACHE.lock() {
+        let cache = guard.get_or_insert_with(HashMap::new);
+        // Prune old entries if cache grows beyond 2000 hosts
+        if cache.len() > 2000 {
+            cache.retain(|_, v| v.expires_at > now);
+        }
+        cache.insert(
+            target.to_string(),
+            DnsCacheEntry {
+                addresses: sorted_addrs.clone(),
+                expires_at: now + Duration::from_secs(60),
+            },
+        );
+    }
+
+    Ok(sorted_addrs)
 }
 
 /// Proxy service configuration and lifecycle controller.
@@ -62,8 +122,6 @@ impl ProxyInstance {
     ) -> Result<Self, String> {
         let socket = TcpSocket::new_v4().map_err(|e| format!("Socket creation error: {}", e))?;
         let _ = socket.set_reuseaddr(true);
-        let _ = socket.set_recv_buffer_size(2 * 1024 * 1024);
-        let _ = socket.set_send_buffer_size(2 * 1024 * 1024);
         #[cfg(unix)]
         let _ = socket.set_reuseport(true);
 
@@ -72,7 +130,7 @@ impl ProxyInstance {
             .map_err(|e| format!("Failed to bind port {}: {}", port, e))?;
 
         let listener = socket
-            .listen(1024)
+            .listen(2048)
             .map_err(|e| format!("Failed to listen on port {}: {}", port, e))?;
 
         let (shutdown_tx, _) = broadcast::channel::<()>(1);
@@ -94,6 +152,7 @@ impl ProxyInstance {
                     accept_res = listener.accept() => {
                         match accept_res {
                             Ok((stream, client_addr)) => {
+                                let _ = stream.set_nodelay(true);
                                 let conns = active_conns.clone();
                                 let bytes = total_bytes.clone();
                                 let u = auth_user.clone();
@@ -151,6 +210,7 @@ async fn handle_connection(
     outbound_ip: Option<IpAddr>,
     bytes_counter: Arc<AtomicU64>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let _ = stream.set_nodelay(true);
     let mut peek_buf = [0u8; 3];
     let n = stream.peek(&mut peek_buf).await?;
     if n == 0 {
@@ -255,6 +315,7 @@ async fn handle_socks5(
     let target_addr_str = format!("{}:{}", target_host, target_port);
 
     // Outbound connection bound to the selected network interface / adapter IP
+    let start_time = Instant::now();
     let outbound_stream = match connect_outbound(&target_addr_str, outbound_ip).await {
         Ok(s) => s,
         Err(e) => {
@@ -267,8 +328,7 @@ async fn handle_socks5(
     // SOCKS5 success reply
     stream.write_all(&[0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0]).await?;
 
-    // Bidirectional stream relay with timing and byte tracking
-    let start_time = std::time::Instant::now();
+    // Bidirectional stream relay with 512KB high-speed stream buffers and active timing
     let (bytes_sent, bytes_recv) = relay_streams(stream, outbound_stream, bytes_counter).await;
     let duration_ms = start_time.elapsed().as_millis() as u64;
 
@@ -320,7 +380,7 @@ async fn handle_http_proxy(
     outbound_ip: Option<IpAddr>,
     bytes_counter: Arc<AtomicU64>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let mut buf = [0u8; 4096];
+    let mut buf = [0u8; 8192];
     let n = stream.read(&mut buf).await?;
     if n == 0 {
         return Ok(());
@@ -365,10 +425,10 @@ async fn handle_http_proxy(
         }
         let target_addr = parts[1];
 
+        let start_time = Instant::now();
         match connect_outbound(target_addr, outbound_ip).await {
             Ok(outbound_stream) => {
                 stream.write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n").await?;
-                let start_time = std::time::Instant::now();
                 let (bytes_sent, bytes_recv) = relay_streams(stream, outbound_stream, bytes_counter).await;
                 let duration_ms = start_time.elapsed().as_millis() as u64;
 
@@ -403,9 +463,9 @@ async fn handle_http_proxy(
                 format!("{}:80", host)
             };
 
+            let start_time = Instant::now();
             if let Ok(mut outbound_stream) = connect_outbound(&target_addr, outbound_ip).await {
                 let _ = outbound_stream.write_all(&buf[..n]).await;
-                let start_time = std::time::Instant::now();
                 let (bytes_sent, bytes_recv) = relay_streams(stream, outbound_stream, bytes_counter).await;
                 let duration_ms = start_time.elapsed().as_millis() as u64;
 
@@ -427,18 +487,12 @@ async fn handle_http_proxy(
     Ok(())
 }
 
-/// Connect to target with optional local adapter IP binding and multi-IP resolution fallback
+/// Connect to target with in-memory DNS caching, OS dynamic TCP window scaling, and interface binding
 async fn connect_outbound(
     target: &str,
     bind_ip: Option<IpAddr>,
 ) -> Result<TcpStream, Box<dyn std::error::Error + Send + Sync>> {
-    let mut addrs: Vec<SocketAddr> = tokio::net::lookup_host(target).await?.collect();
-    if addrs.is_empty() {
-        return Err("No DNS addresses resolved".into());
-    }
-
-    // Prioritize IPv4 for cellular dongle & residential compatibility
-    addrs.sort_by_key(|a| if a.is_ipv4() { 0 } else { 1 });
+    let addrs = resolve_host_cached(target).await?;
 
     let mut last_err = None;
 
@@ -449,9 +503,9 @@ async fn connect_outbound(
                     (IpAddr::V4(v4), SocketAddr::V4(_)) => {
                         if let Ok(s) = TcpSocket::new_v4() {
                             let _ = s.set_reuseaddr(true);
+                            #[cfg(unix)]
+                            let _ = s.set_reuseport(true);
                             let _ = s.set_nodelay(true);
-                            let _ = s.set_recv_buffer_size(2 * 1024 * 1024);
-                            let _ = s.set_send_buffer_size(2 * 1024 * 1024);
                             if s.bind(SocketAddr::new(IpAddr::V4(v4), 0)).is_ok() {
                                 s.connect(*target_addr).await.ok()
                             } else {
@@ -464,9 +518,9 @@ async fn connect_outbound(
                     (IpAddr::V6(v6), SocketAddr::V6(_)) => {
                         if let Ok(s) = TcpSocket::new_v6() {
                             let _ = s.set_reuseaddr(true);
+                            #[cfg(unix)]
+                            let _ = s.set_reuseport(true);
                             let _ = s.set_nodelay(true);
-                            let _ = s.set_recv_buffer_size(2 * 1024 * 1024);
-                            let _ = s.set_send_buffer_size(2 * 1024 * 1024);
                             if s.bind(SocketAddr::new(IpAddr::V6(v6), 0)).is_ok() {
                                 s.connect(*target_addr).await.ok()
                             } else {
@@ -480,15 +534,15 @@ async fn connect_outbound(
                 }
             };
 
-            // Limit binding handshake to 3.5s to prevent hanging on unresponsive cellular route
-            if let Ok(Some(stream)) = tokio::time::timeout(std::time::Duration::from_millis(3500), connect_fut).await {
+            // Fast 2.0s timeout per IP handshake to prevent connection stalls
+            if let Ok(Some(stream)) = tokio::time::timeout(Duration::from_millis(2000), connect_fut).await {
                 let _ = stream.set_nodelay(true);
                 return Ok(stream);
             }
         }
 
-        // Direct connect fallback with 4s timeout
-        if let Ok(Ok(stream)) = tokio::time::timeout(std::time::Duration::from_millis(4000), TcpStream::connect(target_addr)).await {
+        // Direct connect fallback with 2.5s timeout
+        if let Ok(Ok(stream)) = tokio::time::timeout(Duration::from_millis(2500), TcpStream::connect(target_addr)).await {
             let _ = stream.set_nodelay(true);
             return Ok(stream);
         } else {
@@ -501,7 +555,8 @@ async fn connect_outbound(
         .unwrap_or_else(|| "Connection to all resolved target IPs failed".into()))
 }
 
-/// High-performance bidirectional data transfer utilizing 64KB high-speed stream buffers
+/// Commercial-grade bidirectional data transfer using 512KB (524,288 bytes) high-speed stream buffers.
+/// Supports active transfer throughput tracking and fast teardown on socket disconnects.
 async fn relay_streams(
     mut client: TcpStream,
     mut target: TcpStream,
@@ -510,7 +565,10 @@ async fn relay_streams(
     let _ = client.set_nodelay(true);
     let _ = target.set_nodelay(true);
 
-    match tokio::io::copy_bidirectional_with_sizes(&mut client, &mut target, 65536, 65536).await {
+    // 512 KB Buffer (524,288 bytes) per direction for maximum bulk data throughput
+    const RELAY_BUFFER_SIZE: usize = 524288;
+
+    match tokio::io::copy_bidirectional_with_sizes(&mut client, &mut target, RELAY_BUFFER_SIZE, RELAY_BUFFER_SIZE).await {
         Ok((from_client, from_target)) => {
             bytes_counter.fetch_add(from_client + from_target, Ordering::Relaxed);
             (from_client, from_target)
