@@ -220,7 +220,7 @@ fn install_and_restart(
                 let ext = installer_path.extension().and_then(|s| s.to_str()).unwrap_or("").to_lowercase();
 
                 if ext == "deb" {
-                    // Debian package installer
+                    // Debian package installer via pkexec
                     let _ = std::process::Command::new("pkexec")
                         .args(&["dpkg", "-i", installer_path.to_str().unwrap_or("")])
                         .spawn()
@@ -229,7 +229,7 @@ fn install_and_restart(
                     std::thread::sleep(std::time::Duration::from_millis(500));
                     std::process::exit(0);
                 } else {
-                    // AppImage / ELF binary execution with atomic swap
+                    // AppImage / ELF binary execution with atomic inode replacement
                     use std::os::unix::fs::PermissionsExt;
                     let mut perms = std::fs::metadata(&installer_path)
                         .map_err(|e| format!("Failed to read metadata: {}", e))?
@@ -238,19 +238,58 @@ fn install_and_restart(
                     std::fs::set_permissions(&installer_path, perms)
                         .map_err(|e| format!("Failed to set executable permissions: {}", e))?;
 
-                    if let Ok(appimage_path) = std::env::var("APPIMAGE") {
-                        let dest = PathBuf::from(appimage_path);
-                        let _ = std::fs::copy(&installer_path, &dest);
+                    // Determine active AppImage or binary path
+                    let appimage_env = std::env::var("APPIMAGE").ok();
+                    let target_dest = if let Some(ref path_str) = appimage_env {
+                        PathBuf::from(path_str)
+                    } else if let Ok(current_exe) = std::env::current_exe() {
+                        current_exe
+                    } else {
+                        installer_path.clone()
+                    };
 
-                        std::process::Command::new(&dest)
-                            .spawn()
+                    if target_dest.exists() && target_dest != installer_path {
+                        let dest_dir = target_dest.parent().unwrap_or_else(|| std::path::Path::new("/tmp"));
+                        let filename = target_dest.file_name().and_then(|n| n.to_str()).unwrap_or("proxypk-agent.AppImage");
+                        let temp_dest = dest_dir.join(format!(".{}.ota_tmp", filename));
+
+                        // 1. Copy downloaded payload to temp file on SAME directory/filesystem
+                        std::fs::copy(&installer_path, &temp_dest)
+                            .map_err(|e| format!("Failed to stage update in {}: {}", dest_dir.display(), e))?;
+
+                        // 2. Grant execution permissions on staged file
+                        if let Ok(meta) = std::fs::metadata(&temp_dest) {
+                            let mut p = meta.permissions();
+                            p.set_mode(0o755);
+                            let _ = std::fs::set_permissions(&temp_dest, p);
+                        }
+
+                        // 3. Atomically replace active file (Linux permits rename/unlink over running executable)
+                        if let Err(rename_err) = std::fs::rename(&temp_dest, &target_dest) {
+                            log::warn!("Direct rename failed ({}), unlinking old binary before move...", rename_err);
+                            let _ = std::fs::remove_file(&target_dest);
+                            std::fs::rename(&temp_dest, &target_dest)
+                                .map_err(|e| format!("Failed to atomically replace active binary at {}: {}", target_dest.display(), e))?;
+                        }
+
+                        // 4. Launch updated AppImage with clean environment
+                        let mut cmd = std::process::Command::new(&target_dest);
+                        cmd.env_remove("APPDIR");
+                        cmd.env_remove("OWD");
+                        cmd.spawn()
                             .map_err(|e| format!("Failed to restart updated AppImage: {}", e))?;
 
+                        std::thread::sleep(std::time::Duration::from_millis(500));
                         std::process::exit(0);
                     } else {
-                        std::process::Command::new(&installer_path)
-                            .spawn()
+                        // Direct launch from downloaded installer path
+                        let mut cmd = std::process::Command::new(&installer_path);
+                        cmd.env_remove("APPDIR");
+                        cmd.env_remove("OWD");
+                        cmd.spawn()
                             .map_err(|e| format!("Failed to launch updated binary: {}", e))?;
+
+                        std::thread::sleep(std::time::Duration::from_millis(500));
                         std::process::exit(0);
                     }
                 }
