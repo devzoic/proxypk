@@ -296,6 +296,10 @@
                 </div>
 
                 <div class="toolbar-right">
+                  <button class="btn-ghost-sm" onclick="openWingleManager()" style="border-color:var(--accent);color:var(--accent);font-weight:700;" title="Manage and resolve multi-wingle subnets">
+                    <i class="bi bi-broadcast-pin"></i> 4G Wingle Subnets
+                  </button>
+
                   <label class="custom-toggle" title="Show virtual interfaces (Apple utun/bridge tunnels)">
                     <input type="checkbox" id="toggle-virtual" onchange="refreshAdapters()" />
                     <span class="toggle-slider"></span>
@@ -306,6 +310,22 @@
                     <i class="bi bi-arrow-clockwise"></i> Rescan
                   </button>
                 </div>
+              </div>
+
+              <!-- Multi-Wingle IP Conflict Banner -->
+              <div id="wingle-conflict-banner" style="display:none;background:rgba(229,72,77,0.12);border:1px solid rgba(229,72,77,0.4);border-radius:var(--radius-sm);padding:14px 18px;margin-bottom:14px;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;">
+                <div style="display:flex;align-items:center;gap:12px;">
+                  <i class="bi bi-exclamation-triangle-fill" style="color:var(--red);font-size:22px;"></i>
+                  <div>
+                    <div style="font-weight:800;color:var(--text-primary);font-size:13.5px;">Multi-Wingle IP Conflict Detected</div>
+                    <div style="font-size:12px;color:var(--text-secondary);margin-top:2px;">
+                      Multiple 4G LTE USB Wingles share the same default factory gateway subnet (<span class="mono" style="color:var(--accent);font-weight:700;">192.168.8.x</span>). Both devices route through the same SIM card. Assign distinct subnets (e.g. 192.168.9.1, 192.168.10.1) so each dongle has its own separate IP route.
+                    </div>
+                  </div>
+                </div>
+                <button class="btn-cta-primary" onclick="openWingleManager()" style="padding:7px 16px;font-size:12px;background:var(--red);color:#fff;border:none;">
+                  <i class="bi bi-magic me-1"></i> Resolve Subnets
+                </button>
               </div>
 
               <!-- Adapters List -->
@@ -996,6 +1016,11 @@
         `).join('');
       }
 
+      // Multi-Wingle Conflict Detection Banner
+      const hasWingleConflict = cachedAdapters.some(a => a.has_conflict === true);
+      const conflictBanner = document.getElementById('wingle-conflict-banner');
+      if (conflictBanner) conflictBanner.style.display = hasWingleConflict ? 'flex' : 'none';
+
       // Filter for Network Adapters View
       const filtered = cachedAdapters.filter(a => {
         if (currentFilter === 'online') return a.has_internet === true;
@@ -1052,7 +1077,7 @@
         }
 
         return `
-          <div class="adapter-row-card ${a.has_internet === true ? 'is-verified' : ''}">
+          <div class="adapter-row-card ${a.has_internet === true ? 'is-verified' : ''} ${a.has_conflict ? 'has-conflict-card' : ''}" style="${a.has_conflict ? 'border-color: rgba(229,72,77,0.4);' : ''}">
             <!-- Column 1: Hardware Identity -->
             <div class="col-hardware">
               <div class="hw-avatar ${avatarColor}">
@@ -1071,10 +1096,13 @@
             <!-- Column 2: Local IP -->
             <div class="col-local-ip">
               <span class="col-caption">LOCAL IP</span>
-              <span class="ip-chip mono" onclick="navigator.clipboard.writeText('${a.local_ip || ''}'); log('Copied ${a.local_ip}', 'success');" title="Click to copy">
-                ${a.local_ip || 'Unassigned'}
-                <i class="bi bi-copy copy-mini"></i>
-              </span>
+              <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">
+                <span class="ip-chip mono" onclick="navigator.clipboard.writeText('${a.local_ip || ''}'); log('Copied ${a.local_ip}', 'success');" title="Click to copy">
+                  ${a.local_ip || 'Unassigned'}
+                  <i class="bi bi-copy copy-mini"></i>
+                </span>
+                ${a.has_conflict ? `<span class="conflict-pill" title="${a.conflict_message || 'Duplicate local IP detected'}"><i class="bi bi-exclamation-triangle-fill"></i> IP CONFLICT</span>` : ''}
+              </div>
             </div>
 
             <!-- Column 3: Internet Telemetry -->
@@ -1085,6 +1113,12 @@
 
             <!-- Column 4: Actions -->
             <div class="col-actions">
+              ${a.has_conflict ? `
+                <button class="btn-action-test" onclick="openWingleManager('${a.adapter_name}', '${a.local_ip || '192.168.8.100'}')" style="background:rgba(229,72,77,0.15);color:var(--red);border-color:rgba(229,72,77,0.4);" title="Resolve IP Subnet Conflict">
+                  <i class="bi bi-sliders"></i>
+                  <span>Fix IP</span>
+                </button>
+              ` : ''}
               <button class="btn-action-test" onclick="testSingleAdapter('${a.adapter_name}')" ${a.is_testing ? 'disabled' : ''} title="Test Public Internet Route">
                 <i class="bi bi-lightning-charge"></i>
                 <span>Test</span>
@@ -1443,6 +1477,122 @@
       updateCheckInterval = setInterval(() => checkForUpdates(true), 1800000); // 30m background OTA update check
     }
 
+    // ─── 4G Wingle Subnet Resolver & Manager ──────────────────
+    function openWingleManager(targetAdapter = null, targetIp = null) {
+      const modal = document.getElementById('wingle-modal');
+      if (modal) {
+        modal.style.display = 'flex';
+        populateWingleModal(targetAdapter);
+      }
+    }
+
+    function closeWingleManager() {
+      const modal = document.getElementById('wingle-modal');
+      if (modal) modal.style.display = 'none';
+    }
+
+    function populateWingleModal(highlightAdapter = null) {
+      const container = document.getElementById('wingle-modal-list');
+      if (!container) return;
+
+      if (!cachedAdapters || cachedAdapters.length === 0) {
+        container.innerHTML = `<div class="empty-state-mini">No network adapters currently detected.</div>`;
+        return;
+      }
+
+      const wingles = cachedAdapters.filter(a => 
+        a.adapter_type === 'wingle' || 
+        a.adapter_type === 'cellular' || 
+        (a.local_ip && a.local_ip.startsWith('192.168.')) ||
+        (a.display_name && (a.display_name.toLowerCase().includes('rndis') || a.display_name.toLowerCase().includes('huawei') || a.display_name.toLowerCase().includes('zte') || a.display_name.toLowerCase().includes('mobile')))
+      );
+
+      if (wingles.length === 0) {
+        container.innerHTML = `<div class="empty-state-mini">No 4G LTE Wingles or 192.168.x.x adapters detected. Plug in your dongles and click Rescan.</div>`;
+        return;
+      }
+
+      let html = '';
+      wingles.forEach((w, idx) => {
+        const currIp = w.local_ip || '192.168.8.100';
+        const currGateway = currIp.replace(/\.\d+$/, '.1');
+        const suggestedSubnet = `192.168.${8 + idx}.1`;
+
+        html += `
+          <div class="wingle-card-item ${w.has_conflict ? 'has-conflict' : ''}" style="${highlightAdapter === w.adapter_name ? 'border-color:var(--accent);' : ''}">
+            <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;margin-bottom:10px;">
+              <div style="display:flex;align-items:center;gap:10px;">
+                <div style="width:34px;height:34px;border-radius:8px;background:var(--accent-glow);color:var(--accent);display:flex;align-items:center;justify-content:center;font-size:16px;">
+                  <i class="bi bi-broadcast-pin"></i>
+                </div>
+                <div>
+                  <div style="font-weight:800;font-size:13.5px;color:var(--text-primary);">${w.display_name || w.adapter_name}</div>
+                  <div class="mono" style="font-size:11.5px;color:var(--text-muted);">Current Local IP: <strong style="color:var(--text-primary);">${currIp}</strong> (Gateway: ${currGateway})</div>
+                </div>
+              </div>
+              <div>
+                ${w.has_conflict ? `<span class="conflict-pill"><i class="bi bi-exclamation-triangle-fill"></i> IP CONFLICT</span>` : `<span class="qa-badge online"><i class="bi bi-check2"></i> Distinct Route</span>`}
+              </div>
+            </div>
+
+            <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;background:var(--bg-surface-solid);padding:10px 14px;border-radius:var(--radius-sm);border:1px solid var(--border-subtle);">
+              <div style="font-size:12px;color:var(--text-secondary);">
+                Recommended Subnet: <span class="mono" style="font-weight:700;color:var(--accent);">${suggestedSubnet}</span>
+              </div>
+              <div style="display:flex;gap:8px;">
+                <button class="btn-xs-action" onclick="autoConfigureWingle('${currGateway}', '${suggestedSubnet}', this)" style="background:var(--accent);color:#060907;font-weight:700;border:none;padding:5px 12px;" title="1-Click Auto Configure via HiLink API">
+                  <i class="bi bi-magic me-1"></i> Auto-Set to ${suggestedSubnet}
+                </button>
+                <button class="btn-xs-action" onclick="openWinglePortal('${currGateway}')" title="Open Web Portal in Browser">
+                  <i class="bi bi-box-arrow-up-right me-1"></i> Web Admin (${currGateway})
+                </button>
+              </div>
+            </div>
+          </div>
+        `;
+      });
+
+      container.innerHTML = html;
+    }
+
+    async function autoConfigureWingle(currentGateway, newGateway, btnEl) {
+      if (btnEl) {
+        btnEl.disabled = true;
+        btnEl.innerHTML = '<span class="spinner-micro me-1"></span> Configuring...';
+      }
+
+      log(`Attempting HiLink auto-configuration for ${currentGateway} -> ${newGateway}...`, 'info');
+      try {
+        const res = await invoke('configure_wingle_subnet', {
+          currentGatewayIp: currentGateway,
+          newGatewayIp: newGateway,
+        });
+
+        log(`✅ ${res.message}`, 'success');
+        showToast('success', 'Wingle Configured', res.message);
+        setTimeout(async () => {
+          await refreshAdapters(true);
+          populateWingleModal();
+        }, 4000);
+      } catch (e) {
+        log(`❌ Auto-config notice: ${e}`, 'warn');
+        showToast('warning', 'Manual Config Recommended', `Could not auto-write via API: ${e}. Click "Web Admin" to change LAN IP in browser.`);
+        if (btnEl) {
+          btnEl.disabled = false;
+          btnEl.innerHTML = `<i class="bi bi-magic me-1"></i> Auto-Set to ${newGateway}`;
+        }
+      }
+    }
+
+    async function openWinglePortal(gatewayIp) {
+      try {
+        await invoke('open_wingle_portal', { gatewayIp });
+        showToast('info', 'Opening Portal', `Opened http://${gatewayIp} in your browser.`);
+      } catch (e) {
+        window.open(`http://${gatewayIp}/html/dhcpipaddress.html`, '_blank');
+      }
+    }
+
     // Auto-connect on startup
     window.addEventListener('DOMContentLoaded', async () => {
       try {
@@ -1452,5 +1602,53 @@
       }
     });
   </script>
+
+  <!-- ════════ MODAL: 4G WINGLE MULTI-DEVICE SUBNET RESOLVER ════════ -->
+  <div id="wingle-modal" class="modal-backdrop-custom" style="display:none;" onclick="if(event.target === this) closeWingleManager();">
+    <div class="modal-card-custom">
+      <div class="modal-header-custom">
+        <div style="display:flex;align-items:center;gap:10px;">
+          <div style="width:36px;height:36px;border-radius:8px;background:var(--accent-glow);color:var(--accent);display:flex;align-items:center;justify-content:center;font-size:18px;border:1px solid rgba(var(--accent-rgb),0.2);">
+            <i class="bi bi-broadcast-pin"></i>
+          </div>
+          <div>
+            <div style="font-size:15px;font-weight:800;color:var(--text-primary);">4G LTE Wingle Multi-Device Subnet Manager</div>
+            <div style="font-size:11.5px;color:var(--text-muted);">Assign distinct subnets (192.168.8.1, 192.168.9.1, 192.168.10.1...) to use multiple wingles on one PC</div>
+          </div>
+        </div>
+        <button class="toast-close" onclick="closeWingleManager()" style="font-size:18px;"><i class="bi bi-x-lg"></i></button>
+      </div>
+
+      <div class="modal-body-custom">
+        <!-- Diagnostic Info Box -->
+        <div style="background:var(--bg-app);border:1px solid var(--border-subtle);border-radius:var(--radius-sm);padding:14px;margin-bottom:16px;font-size:12.5px;line-height:1.6;color:var(--text-secondary);">
+          <div style="font-weight:700;color:var(--text-primary);margin-bottom:4px;display:flex;align-items:center;gap:6px;">
+            <i class="bi bi-info-circle-fill text-accent"></i> Why do multiple 4G Wingles show the same IP by default?
+          </div>
+          All Huawei, ZTE, and Zong 4G Wingles come from the factory with built-in DHCP server set to gateway <code class="mono" style="color:var(--accent);">192.168.8.1</code>. When plugging 2 or more dongles into the same PC, all interfaces get <code class="mono" style="color:var(--accent);">192.168.8.100</code>, causing the operating system to send all traffic through only the first dongle.
+          <div style="margin-top:6px;color:var(--text-primary);font-weight:600;">
+            Solution: Assign each dongle its own subnet (Dongle 1: 192.168.8.1, Dongle 2: 192.168.9.1, Dongle 3: 192.168.10.1...). Once saved in the dongle, it stays permanent!
+          </div>
+        </div>
+
+        <!-- Connected Wingles List -->
+        <div style="font-size:13px;font-weight:800;color:var(--text-primary);margin-bottom:10px;">
+          Connected 4G LTE Modems & Network Interfaces:
+        </div>
+        <div id="wingle-modal-list">
+          <!-- Dynamic cards -->
+        </div>
+      </div>
+
+      <div class="modal-footer-custom">
+        <button class="btn-ghost-action" onclick="refreshAdapters(true); populateWingleModal();">
+          <i class="bi bi-arrow-clockwise me-1"></i> Rescan Hardware
+        </button>
+        <button class="btn-cta-primary" onclick="closeWingleManager()" style="padding:7px 20px;font-size:13px;">
+          Done
+        </button>
+      </div>
+    </div>
+  </div>
 </body>
 </html>

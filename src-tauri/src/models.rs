@@ -63,6 +63,8 @@ pub struct AdapterInfo {
     pub has_internet: Option<bool>,
     pub ping_ms: Option<u64>,
     pub is_virtual: Option<bool>,
+    pub has_conflict: Option<bool>,
+    pub conflict_message: Option<String>,
     pub status: String,
 }
 

@@ -2154,3 +2154,91 @@ html, body {
     transform: translateX(0) scale(1);
   }
 }
+
+/* ─── Wingle Subnet Resolver & Modal ───────────────────────── */
+.modal-backdrop-custom {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(4, 8, 6, 0.82);
+  backdrop-filter: blur(8px);
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  animation: fadeIn 0.25s var(--ease-out);
+}
+
+.modal-card-custom {
+  background: var(--bg-surface-solid);
+  border: 1px solid var(--border-card);
+  border-radius: var(--radius-lg);
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.6), 0 0 20px rgba(10, 182, 138, 0.15);
+  width: 100%;
+  max-width: 800px;
+  max-height: 90vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  animation: screenIn 0.3s var(--ease-out);
+}
+
+.modal-header-custom {
+  padding: 18px 24px;
+  border-bottom: 1px solid var(--border-card);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background: var(--bg-surface);
+}
+
+.modal-body-custom {
+  padding: 20px 24px;
+  overflow-y: auto;
+  flex: 1;
+}
+
+.modal-footer-custom {
+  padding: 14px 24px;
+  border-top: 1px solid var(--border-card);
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  background: var(--bg-surface);
+}
+
+.conflict-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: rgba(229, 72, 77, 0.15);
+  color: var(--red);
+  border: 1px solid rgba(229, 72, 77, 0.35);
+  border-radius: var(--radius-pill);
+  padding: 2px 8px;
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.3px;
+}
+
+.wingle-card-item {
+  background: var(--bg-app);
+  border: 1px solid var(--border-card);
+  border-radius: var(--radius-md);
+  padding: 16px;
+  margin-bottom: 12px;
+  transition: all 0.2s ease;
+}
+
+.wingle-card-item.has-conflict {
+  border-color: rgba(229, 72, 77, 0.45);
+  background: linear-gradient(135deg, rgba(229, 72, 77, 0.05) 0%, transparent 100%);
+}
+
+.wingle-card-item:hover {
+  border-color: var(--border-hover);
+}

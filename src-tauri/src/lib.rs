@@ -378,8 +378,34 @@ fn detect_adapters(include_virtual: Option<bool>) -> Vec<AdapterInfo> {
             has_internet: None,
             ping_ms: None,
             is_virtual: Some(is_virtual),
+            has_conflict: Some(false),
+            conflict_message: None,
             status: "online".to_string(),
         });
+    }
+
+    // Detect IP conflicts across adapters (e.g. multiple 4G Wingles with identical 192.168.8.100)
+    let mut ip_counts: HashMap<String, usize> = HashMap::new();
+    for a in &adapters {
+        if let Some(ref ip) = a.local_ip {
+            if !ip.is_empty() && !ip.starts_with("127.") && !ip.starts_with("fe80:") {
+                *ip_counts.entry(ip.clone()).or_insert(0) += 1;
+            }
+        }
+    }
+
+    for a in &mut adapters {
+        if let Some(ref ip) = a.local_ip {
+            if let Some(&count) = ip_counts.get(ip) {
+                if count > 1 {
+                    a.has_conflict = Some(true);
+                    a.conflict_message = Some(format!(
+                        "IP Conflict: {} other device(s) share IP {}. Multi-wingle setups require distinct subnets (e.g. 192.168.9.1, 192.168.10.1).",
+                        count - 1, ip
+                    ));
+                }
+            }
+        }
     }
 
     // Sort: real hardware adapters with IPv4 first
@@ -1145,6 +1171,121 @@ async fn fetch_and_start_proxies(state: State<'_, AppState>) -> Result<FetchProx
     })
 }
 
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct WingleSubnetConfigResult {
+    pub success: bool,
+    pub message: String,
+    pub old_ip: String,
+    pub new_ip: String,
+}
+
+/// Automatically configure Huawei / Zong / ZTE HiLink 4G Wingle subnet LAN IP (e.g. 192.168.8.1 -> 192.168.9.1)
+#[tauri::command]
+async fn configure_wingle_subnet(
+    current_gateway_ip: String,
+    new_gateway_ip: String,
+) -> Result<WingleSubnetConfigResult, String> {
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(6))
+        .build()
+        .map_err(|e| e.to_string())?;
+
+    let base_url = format!("http://{}", current_gateway_ip.trim());
+
+    // 1. Fetch Session & Token info from HiLink dongle
+    let token_url = format!("{}/api/webserver/SesTokInfo", base_url);
+    let token_resp = client.get(&token_url).send().await;
+
+    let mut session_id = String::new();
+    let mut token = String::new();
+
+    if let Ok(resp) = token_resp {
+        if let Ok(text) = resp.text().await {
+            if let Some(pos) = text.find("<SesInfo>") {
+                if let Some(end) = text[pos + 9..].find("</SesInfo>") {
+                    session_id = text[pos + 9..pos + 9 + end].to_string();
+                }
+            }
+            if let Some(pos) = text.find("<TokInfo>") {
+                if let Some(end) = text[pos + 9..].find("</TokInfo>") {
+                    token = text[pos + 9..pos + 9 + end].to_string();
+                }
+            }
+        }
+    }
+
+    // Determine new DHCP range (e.g. if 192.168.9.1 -> 192.168.9.100 - 192.168.9.200)
+    let parts: Vec<&str> = new_gateway_ip.split('.').collect();
+    if parts.len() != 4 {
+        return Err("Invalid new gateway IP format. Expected format like 192.168.9.1".to_string());
+    }
+    let prefix = format!("{}.{}.{}", parts[0], parts[1], parts[2]);
+    let start_ip = format!("{}.100", prefix);
+    let end_ip = format!("{}.200", prefix);
+
+    let xml_payload = format!(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?><request><DhcpIPAddress>{}</DhcpIPAddress><DhcpLanNetmask>255.255.255.0</DhcpLanNetmask><DhcpStatus>1</DhcpStatus><DhcpStartIPAddress>{}</DhcpStartIPAddress><DhcpEndIPAddress>{}</DhcpEndIPAddress><DhcpLeaseTime>86400</DhcpLeaseTime><DnsStatus>1</DnsStatus><PrimaryDns>{}</PrimaryDns><SecondaryDns>{}</SecondaryDns></request>",
+        new_gateway_ip.trim(),
+        start_ip,
+        end_ip,
+        new_gateway_ip.trim(),
+        new_gateway_ip.trim(),
+    );
+
+    let dhcp_url = format!("{}/api/dhcp/settings", base_url);
+    let mut req = client.post(&dhcp_url)
+        .header("Content-Type", "application/x-www-form-urlencoded; charset=UTF-8");
+
+    if !token.is_empty() {
+        req = req.header("__RequestVerificationToken", token);
+    }
+    if !session_id.is_empty() {
+        req = req.header("Cookie", format!("SessionID={}", session_id));
+    }
+
+    match req.body(xml_payload).send().await {
+        Ok(resp) => {
+            let status = resp.status();
+            let text = resp.text().await.unwrap_or_default();
+            if text.contains("<response>OK</response>") || text.contains("OK") || status.is_success() {
+                Ok(WingleSubnetConfigResult {
+                    success: true,
+                    message: format!(
+                        "Successfully updated Wingle LAN IP to {}. The dongle is rebooting its DHCP server.",
+                        new_gateway_ip
+                    ),
+                    old_ip: current_gateway_ip,
+                    new_ip: new_gateway_ip,
+                })
+            } else {
+                Err(format!(
+                    "Dongle response: {}. Open the web admin at http://{} to change DHCP IP manually.",
+                    text, current_gateway_ip
+                ))
+            }
+        }
+        Err(e) => {
+            Err(format!(
+                "Failed to send request to http://{}: {}. Please open web admin at http://{}.",
+                current_gateway_ip, e, current_gateway_ip
+            ))
+        }
+    }
+}
+
+/// Open Wingle Web Admin portal in default browser
+#[tauri::command]
+async fn open_wingle_portal(gateway_ip: String, app: tauri::AppHandle) -> Result<String, String> {
+    use tauri_plugin_opener::OpenerExt;
+    let url = if gateway_ip.starts_with("http://") || gateway_ip.starts_with("https://") {
+        gateway_ip
+    } else {
+        format!("http://{}/html/dhcpipaddress.html", gateway_ip.trim())
+    };
+    app.opener().open_url(&url, None::<&str>).map_err(|e| e.to_string())?;
+    Ok(format!("Opened {}", url))
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -1175,6 +1316,8 @@ pub fn run() {
             restart_tunnel,
             get_running_proxies,
             fetch_and_start_proxies,
+            configure_wingle_subnet,
+            open_wingle_portal,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
