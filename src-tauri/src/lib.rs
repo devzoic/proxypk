@@ -435,9 +435,77 @@ fn detect_adapters(include_virtual: Option<bool>) -> Vec<AdapterInfo> {
     adapters
 }
 
+/// Configures Linux Policy-Based Routing (PBR) and relaxes rp_filter across all detected network adapters.
+/// Ensures each 4G Wingle / LAN subnet routes through its own physical interface without default gateway collision.
+#[tauri::command]
+fn apply_linux_multi_wingle_routing() -> Result<String, String> {
+    #[cfg(target_os = "linux")]
+    {
+        // 1. Relax reverse path filtering to loose mode (2) across all interfaces
+        let _ = std::process::Command::new("sysctl").args(["-w", "net.ipv4.conf.all.rp_filter=2"]).output();
+        let _ = std::process::Command::new("sysctl").args(["-w", "net.ipv4.conf.default.rp_filter=2"]).output();
+
+        // Try to persist to sysctl.d if running with write access
+        let _ = std::fs::write(
+            "/etc/sysctl.d/99-proxypk-multihome.conf",
+            "# ProxyPK Multi-Wingle Asymmetric Routing Configuration\nnet.ipv4.conf.all.rp_filter=2\nnet.ipv4.conf.default.rp_filter=2\n",
+        );
+
+        let adapters = detect_adapters(Some(false));
+        let mut configured = 0;
+
+        for (idx, a) in adapters.iter().enumerate() {
+            if let Some(ref ip_str) = a.local_ip {
+                if let Ok(ip) = ip_str.parse::<std::net::Ipv4Addr>() {
+                    let oct = ip.octets();
+                    if ip.is_private() && !ip.is_loopback() && !ip.is_link_local() {
+                        let gateway = a.gateway.clone().unwrap_or_else(|| format!("{}.{}.{}.1", oct[0], oct[1], oct[2]));
+                        let table_id = 100 + (oct[2] as u32) + (idx as u32);
+                        let dev = &a.adapter_name;
+
+                        // Set interface-specific rp_filter
+                        let dev_sysctl = format!("net.ipv4.conf.{}.rp_filter=2", dev);
+                        let _ = std::process::Command::new("sysctl").args(["-w", &dev_sysctl]).output();
+
+                        // Add policy routing rule
+                        let _ = std::process::Command::new("ip")
+                            .args(["rule", "del", "from", ip_str, "table", &table_id.to_string()])
+                            .output();
+                        let _ = std::process::Command::new("ip")
+                            .args(["rule", "add", "from", ip_str, "table", &table_id.to_string()])
+                            .output();
+
+                        // Add default route to table
+                        let _ = std::process::Command::new("ip")
+                            .args(["route", "replace", "default", "via", &gateway, "dev", dev, "table", &table_id.to_string()])
+                            .output();
+
+                        configured += 1;
+                    }
+                }
+            }
+        }
+
+        let _ = std::process::Command::new("ip").args(["route", "flush", "cache"]).output();
+
+        Ok(format!("Successfully configured policy routing for {} interface(s)", configured))
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    {
+        Ok("Policy routing is managed natively on this operating system.".to_string())
+    }
+}
+
 /// Test internet connectivity for a specific network interface by binding to its local IP address.
 #[tauri::command]
 async fn check_adapter_internet(ip: String) -> Result<InternetCheckResult, String> {
+    // On Linux, make sure policy routing and rp_filter are active before checking
+    #[cfg(target_os = "linux")]
+    {
+        let _ = apply_linux_multi_wingle_routing();
+    }
+
     let local_addr = match ip.parse::<std::net::IpAddr>() {
         Ok(addr) => addr,
         Err(e) => {
@@ -1366,6 +1434,7 @@ pub fn run() {
             fetch_and_start_proxies,
             configure_wingle_subnet,
             open_wingle_portal,
+            apply_linux_multi_wingle_routing,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

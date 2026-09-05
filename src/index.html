@@ -296,6 +296,10 @@
                 </div>
 
                 <div class="toolbar-right">
+                  <button class="btn-ghost-sm" onclick="applyMultiWingleRouting(true)" style="border-color:#38bdf8;color:#38bdf8;font-weight:700;" title="Automatically configure Linux Policy-Based Routing for all 4G LTE Wingles">
+                    <i class="bi bi-shuffle"></i> Fix Multi-Wingle Routing
+                  </button>
+
                   <button class="btn-ghost-sm" onclick="openWingleManager()" style="border-color:var(--accent);color:var(--accent);font-weight:700;" title="Manage and resolve multi-wingle subnets">
                     <i class="bi bi-broadcast-pin"></i> 4G Wingle Subnets
                   </button>
@@ -929,6 +933,10 @@
         cachedAdapters = await invoke('detect_adapters', { includeVirtual });
         renderAdapters();
         log(`Scanned network hardware: found ${cachedAdapters.length} adapter interface(s)`);
+
+        // Apply policy routing for multi-wingle adapters in background
+        applyMultiWingleRouting(false);
+
         if (isManual) {
           showToast('info', 'Hardware Scanned', `Found ${cachedAdapters.length} network interface(s)`);
         }
@@ -1184,11 +1192,31 @@
       renderAdapters();
     }
 
+    async function applyMultiWingleRouting(isManual = false) {
+      try {
+        log('Configuring Linux kernel policy routing for multi-wingle network interfaces...');
+        const res = await invoke('apply_linux_multi_wingle_routing');
+        log('⚡ ' + res, 'success');
+        if (isManual) {
+          showToast('success', 'Multi-Wingle Routing Active', res);
+          await refreshAdapters(true);
+        }
+      } catch (e) {
+        log('Multi-wingle routing info: ' + e, 'warn');
+        if (isManual) {
+          showToast('warning', 'Policy Routing', String(e));
+        }
+      }
+    }
+
     async function testAllAdaptersInternet() {
       const btn = document.getElementById('btn-global-test');
       btn.disabled = true;
       btn.innerHTML = '<span class="spinner-micro"></span> <span>Testing...</span>';
       log('Running internet connectivity check across all network interfaces...');
+
+      // Proactively ensure multi-wingle policy routing is configured before testing
+      await applyMultiWingleRouting(false);
 
       for (const a of cachedAdapters) {
         if (a.local_ip && !a.local_ip.startsWith('fe80:')) {
