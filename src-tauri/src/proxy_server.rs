@@ -604,19 +604,24 @@ async fn connect_outbound(
                 }
             };
 
-            // Fast 2.0s timeout per IP handshake to prevent connection stalls
-            if let Ok(Some(stream)) = tokio::time::timeout(Duration::from_millis(2000), connect_fut).await {
+            // Fast 2.5s timeout per IP handshake to prevent connection stalls
+            if let Ok(Some(stream)) = tokio::time::timeout(Duration::from_millis(2500), connect_fut).await {
                 let _ = stream.set_nodelay(true);
                 return Ok(stream);
+            } else {
+                last_err = Some(std::io::Error::new(
+                    std::io::ErrorKind::AddrNotAvailable,
+                    format!("Outbound connection via adapter IP {} timed out or failed", local_ip),
+                ));
             }
-        }
-
-        // Direct connect fallback with 2.5s timeout
-        if let Ok(Ok(stream)) = tokio::time::timeout(Duration::from_millis(2500), TcpStream::connect(target_addr)).await {
-            let _ = stream.set_nodelay(true);
-            return Ok(stream);
         } else {
-            last_err = Some(std::io::Error::new(std::io::ErrorKind::TimedOut, "TCP connect timed out"));
+            // Direct connect fallback with 2.5s timeout only when no specific adapter is bound
+            if let Ok(Ok(stream)) = tokio::time::timeout(Duration::from_millis(2500), TcpStream::connect(target_addr)).await {
+                let _ = stream.set_nodelay(true);
+                return Ok(stream);
+            } else {
+                last_err = Some(std::io::Error::new(std::io::ErrorKind::TimedOut, "TCP connect timed out"));
+            }
         }
     }
 

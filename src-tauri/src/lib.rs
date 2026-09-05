@@ -365,6 +365,15 @@ fn detect_adapters(include_virtual: Option<bool>) -> Vec<AdapterInfo> {
             (Some(dname), None, atype.to_string())
         };
 
+        let gateway = primary_ip.as_ref().and_then(|ip_str| {
+            if let Ok(ip) = ip_str.parse::<std::net::Ipv4Addr>() {
+                let oct = ip.octets();
+                Some(format!("{}.{}.{}.1", oct[0], oct[1], oct[2]))
+            } else {
+                None
+            }
+        });
+
         adapters.push(AdapterInfo {
             adapter_name: name,
             display_name,
@@ -372,7 +381,7 @@ fn detect_adapters(include_virtual: Option<bool>) -> Vec<AdapterInfo> {
             mac_address: mac,
             local_ip: primary_ip,
             external_ip: None,
-            gateway: None,
+            gateway,
             signal_strength: None,
             connection_speed_mbps: None,
             has_internet: None,
@@ -1200,15 +1209,33 @@ async fn configure_wingle_subnet(
     let mut token = String::new();
 
     if let Ok(resp) = token_resp {
-        if let Ok(text) = resp.text().await {
-            if let Some(pos) = text.find("<SesInfo>") {
-                if let Some(end) = text[pos + 9..].find("</SesInfo>") {
-                    session_id = text[pos + 9..pos + 9 + end].to_string();
+        if let Some(tok_header) = resp.headers().get("__RequestVerificationToken") {
+            if let Ok(h_str) = tok_header.to_str() {
+                token = h_str.to_string();
+            }
+        }
+        if let Some(cookie_header) = resp.headers().get("Set-Cookie") {
+            if let Ok(c_str) = cookie_header.to_str() {
+                if let Some(pos) = c_str.find("SessionID=") {
+                    let rest = &c_str[pos + 10..];
+                    let end = rest.find(';').unwrap_or(rest.len());
+                    session_id = rest[..end].to_string();
                 }
             }
-            if let Some(pos) = text.find("<TokInfo>") {
-                if let Some(end) = text[pos + 9..].find("</TokInfo>") {
-                    token = text[pos + 9..pos + 9 + end].to_string();
+        }
+        if let Ok(text) = resp.text().await {
+            if token.is_empty() {
+                if let Some(pos) = text.find("<TokInfo>") {
+                    if let Some(end) = text[pos + 9..].find("</TokInfo>") {
+                        token = text[pos + 9..pos + 9 + end].to_string();
+                    }
+                }
+            }
+            if session_id.is_empty() {
+                if let Some(pos) = text.find("<SesInfo>") {
+                    if let Some(end) = text[pos + 9..].find("</SesInfo>") {
+                        session_id = text[pos + 9..pos + 9 + end].to_string();
+                    }
                 }
             }
         }
@@ -1237,40 +1264,61 @@ async fn configure_wingle_subnet(
         .header("Content-Type", "application/x-www-form-urlencoded; charset=UTF-8");
 
     if !token.is_empty() {
-        req = req.header("__RequestVerificationToken", token);
+        req = req.header("__RequestVerificationToken", &token);
     }
     if !session_id.is_empty() {
         req = req.header("Cookie", format!("SessionID={}", session_id));
     }
 
-    match req.body(xml_payload).send().await {
-        Ok(resp) => {
-            let status = resp.status();
-            let text = resp.text().await.unwrap_or_default();
-            if text.contains("<response>OK</response>") || text.contains("OK") || status.is_success() {
-                Ok(WingleSubnetConfigResult {
-                    success: true,
-                    message: format!(
-                        "Successfully updated Wingle LAN IP to {}. The dongle is rebooting its DHCP server.",
-                        new_gateway_ip
-                    ),
-                    old_ip: current_gateway_ip,
-                    new_ip: new_gateway_ip,
-                })
-            } else {
-                Err(format!(
-                    "Dongle response: {}. Open the web admin at http://{} to change DHCP IP manually.",
-                    text, current_gateway_ip
-                ))
-            }
-        }
-        Err(e) => {
-            Err(format!(
-                "Failed to send request to http://{}: {}. Please open web admin at http://{}.",
-                current_gateway_ip, e, current_gateway_ip
-            ))
+    let hilink_res = req.body(xml_payload).send().await;
+
+    if let Ok(resp) = hilink_res {
+        let status = resp.status();
+        let text = resp.text().await.unwrap_or_default();
+        if text.contains("<response>OK</response>") || text.contains("<response>1</response>") || (status.is_success() && text.contains("OK")) {
+            return Ok(WingleSubnetConfigResult {
+                success: true,
+                message: format!(
+                    "Successfully updated Wingle LAN IP to {}. The dongle is rebooting its DHCP server.",
+                    new_gateway_ip
+                ),
+                old_ip: current_gateway_ip,
+                new_ip: new_gateway_ip,
+            });
         }
     }
+
+    // 2. Fallback: ZTE / Qualcomm modem endpoint
+    let zte_url = format!("{}/goform/goform_set_cmd_process", base_url);
+    let zte_params = [
+        ("isTest", "false"),
+        ("goformId", "SET_LAN_RULE"),
+        ("lan_ipaddr", new_gateway_ip.trim()),
+        ("lan_netmask", "255.255.255.0"),
+        ("dhcp_start", &start_ip),
+        ("dhcp_end", &end_ip),
+        ("dhcp_lease_time", "86400"),
+    ];
+
+    if let Ok(resp) = client.post(&zte_url).form(&zte_params).send().await {
+        let text = resp.text().await.unwrap_or_default();
+        if text.contains("success") || text.contains("OK") {
+            return Ok(WingleSubnetConfigResult {
+                success: true,
+                message: format!(
+                    "Successfully updated ZTE Wingle LAN IP to {}. The dongle is rebooting its DHCP server.",
+                    new_gateway_ip
+                ),
+                old_ip: current_gateway_ip,
+                new_ip: new_gateway_ip,
+            });
+        }
+    }
+
+    Err(format!(
+        "Dongle requires manual web admin authentication. Click 'Open Web Admin' below (http://{}) to set the LAN IP to {}.",
+        current_gateway_ip, new_gateway_ip
+    ))
 }
 
 /// Open Wingle Web Admin portal in default browser

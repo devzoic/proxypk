@@ -1,6 +1,6 @@
 [package]
 name = "proxypk-agent"
-version = "1.0.25"
+version = "1.0.26"
 description = "ProxyPK Desktop Agent"
 authors = ["ProxyPK Team"]
 edition = "2021"
