@@ -800,6 +800,7 @@
 
         await refreshAdapters();
         testAllAdaptersInternet();
+        await syncAndStartProxies();
         startIntervals();
         loadAppVersion();
         checkForUpdates(true); // silent background check

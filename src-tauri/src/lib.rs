@@ -1005,6 +1005,9 @@ async fn sync_and_start_tunnel(state: State<'_, AppState>) -> Result<TunnelStatu
     let runtime_dir = get_runtime_dir();
     let config_path = runtime_dir.join("client.toml");
 
+    let existing_toml = std::fs::read_to_string(&config_path).unwrap_or_default();
+    let config_changed = existing_toml.trim() != toml_text.trim();
+
     std::fs::write(&config_path, &toml_text)
         .map_err(|e| format!("Failed to write client.toml at {:?}: {}", config_path, e))?;
 
@@ -1026,7 +1029,12 @@ async fn sync_and_start_tunnel(state: State<'_, AppState>) -> Result<TunnelStatu
         }
     }
 
-    if !is_running {
+    // Automatically spawn/restart Rathole if config was updated or daemon is not running
+    if config_changed || !is_running {
+        if let Some(mut old_child) = child_guard.take() {
+            let _ = old_child.kill();
+        }
+
         // Terminate any detached stale rathole instances
         #[cfg(target_os = "windows")]
         {
