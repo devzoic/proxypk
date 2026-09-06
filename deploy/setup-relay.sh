@@ -109,12 +109,14 @@ TOKEN=${TOKEN:-proxypk-secret-token}
 read -p "Enter Tunnel Control Port [default: 2333]: " CONTROL_PORT
 CONTROL_PORT=${CONTROL_PORT:-2333}
 
-# Optimized Server TOML (nodelay = true, high backlog)
+# Optimized Server TOML (nodelay = true, high backlog, active heartbeat)
 cat <<EOF > /etc/rathole/server.toml
 # ProxyPK High-Speed Rathole Server Configuration
 [server]
 bind_addr = "0.0.0.0:${CONTROL_PORT}"
 default_token = "${TOKEN}"
+heartbeat_interval = 10
+heartbeat_timeout = 30
 
 # Default service for health checking
 [server.services.health]

@@ -62,9 +62,9 @@ async fn resolve_host_cached(target: &str) -> Result<Vec<SocketAddr>, Box<dyn st
         }
     }
 
-    // 2. Perform Network DNS Lookup with 2.5s Timeout
+    // 2. Perform Network DNS Lookup with 4s Timeout
     let lookup_fut = tokio::net::lookup_host(target);
-    let resolved: Vec<SocketAddr> = match tokio::time::timeout(Duration::from_millis(2500), lookup_fut).await {
+    let resolved: Vec<SocketAddr> = match tokio::time::timeout(Duration::from_millis(4000), lookup_fut).await {
         Ok(Ok(addrs)) => addrs.collect(),
         Ok(Err(e)) => return Err(Box::new(e)),
         Err(_) => return Err("DNS resolution timed out".into()),
@@ -78,18 +78,18 @@ async fn resolve_host_cached(target: &str) -> Result<Vec<SocketAddr>, Box<dyn st
     let mut sorted_addrs = resolved;
     sorted_addrs.sort_by_key(|a| if a.is_ipv4() { 0 } else { 1 });
 
-    // 4. Save to Cache with 60-second TTL
+    // 4. Save to Cache with 120-second TTL
     if let Ok(mut guard) = DNS_CACHE.lock() {
         let cache = guard.get_or_insert_with(HashMap::new);
-        // Prune old entries if cache grows beyond 2000 hosts
-        if cache.len() > 2000 {
+        // Prune old entries if cache grows beyond 5000 hosts
+        if cache.len() > 5000 {
             cache.retain(|_, v| v.expires_at > now);
         }
         cache.insert(
             target.to_string(),
             DnsCacheEntry {
                 addresses: sorted_addrs.clone(),
-                expires_at: now + Duration::from_secs(60),
+                expires_at: now + Duration::from_secs(120),
             },
         );
     }
@@ -122,6 +122,8 @@ impl ProxyInstance {
         let _ = socket.set_reuseaddr(true);
         #[cfg(unix)]
         let _ = socket.set_reuseport(true);
+        let _ = socket.set_recv_buffer_size(1048576);
+        let _ = socket.set_send_buffer_size(1048576);
 
         socket
             .bind(SocketAddr::from(([0, 0, 0, 0], port)))
@@ -575,6 +577,8 @@ async fn connect_outbound(
                             let _ = s.set_reuseaddr(true);
                             #[cfg(unix)]
                             let _ = s.set_reuseport(true);
+                            let _ = s.set_recv_buffer_size(1048576);
+                            let _ = s.set_send_buffer_size(1048576);
                             let _ = s.set_nodelay(true);
                             if s.bind(SocketAddr::new(IpAddr::V4(v4), 0)).is_ok() {
                                 s.connect(*target_addr).await.ok()
@@ -590,6 +594,8 @@ async fn connect_outbound(
                             let _ = s.set_reuseaddr(true);
                             #[cfg(unix)]
                             let _ = s.set_reuseport(true);
+                            let _ = s.set_recv_buffer_size(1048576);
+                            let _ = s.set_send_buffer_size(1048576);
                             let _ = s.set_nodelay(true);
                             if s.bind(SocketAddr::new(IpAddr::V6(v6), 0)).is_ok() {
                                 s.connect(*target_addr).await.ok()
@@ -604,8 +610,8 @@ async fn connect_outbound(
                 }
             };
 
-            // Fast 2.5s timeout per IP handshake to prevent connection stalls
-            if let Ok(Some(stream)) = tokio::time::timeout(Duration::from_millis(2500), connect_fut).await {
+            // 4.5s timeout per IP handshake to accommodate cellular carrier latency
+            if let Ok(Some(stream)) = tokio::time::timeout(Duration::from_millis(4500), connect_fut).await {
                 let _ = stream.set_nodelay(true);
                 return Ok(stream);
             } else {
@@ -615,8 +621,8 @@ async fn connect_outbound(
                 ));
             }
         } else {
-            // Direct connect fallback with 2.5s timeout only when no specific adapter is bound
-            if let Ok(Ok(stream)) = tokio::time::timeout(Duration::from_millis(2500), TcpStream::connect(target_addr)).await {
+            // Direct connect fallback with 4.5s timeout only when no specific adapter is bound
+            if let Ok(Ok(stream)) = tokio::time::timeout(Duration::from_millis(4500), TcpStream::connect(target_addr)).await {
                 let _ = stream.set_nodelay(true);
                 return Ok(stream);
             } else {
