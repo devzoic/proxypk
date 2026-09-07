@@ -1051,12 +1051,36 @@ async fn sync_and_start_tunnel(state: State<'_, AppState>) -> Result<TunnelStatu
         }
 
         let config_str = config_path.to_string_lossy().to_string();
-        match create_hidden_command(&exe_path)
-            .args(["--client", &config_str])
-            .spawn()
+        let mut cmd = create_hidden_command(&exe_path);
+        cmd.args(["--client", &config_str]);
+        cmd.stdout(std::process::Stdio::piped());
+        cmd.stderr(std::process::Stdio::piped());
+
+        match cmd.spawn()
         {
-            Ok(child) => {
+            Ok(mut child) => {
                 log::info!("Spawned Rathole reverse tunnel (PID: {}) using config {:?}", child.id(), config_path);
+
+                if let Some(stdout) = child.stdout.take() {
+                    std::thread::spawn(move || {
+                        use std::io::{BufRead, BufReader};
+                        let reader = BufReader::new(stdout);
+                        for line in reader.lines().flatten() {
+                            log::info!("[rathole-client] {}", line);
+                        }
+                    });
+                }
+
+                if let Some(stderr) = child.stderr.take() {
+                    std::thread::spawn(move || {
+                        use std::io::{BufRead, BufReader};
+                        let reader = BufReader::new(stderr);
+                        for line in reader.lines().flatten() {
+                            log::warn!("[rathole-client] {}", line);
+                        }
+                    });
+                }
+
                 *child_guard = Some(child);
                 is_running = true;
             }
@@ -1118,6 +1142,7 @@ async fn restart_tunnel(state: State<'_, AppState>) -> Result<TunnelStatus, Stri
         let mut child_guard = TUNNEL_CHILD.lock().unwrap();
         if let Some(mut child) = child_guard.take() {
             let _ = child.kill();
+            let _ = child.wait();
         }
     }
     sync_and_start_tunnel(state).await

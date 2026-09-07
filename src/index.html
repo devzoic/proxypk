@@ -1670,6 +1670,14 @@
       try {
         const p = typeof cmd.payload === 'string' ? JSON.parse(cmd.payload) : (cmd.payload || {});
         if (cmd.command === 'start_proxy') {
+          let targetAdapterIp = p.adapter_ip || null;
+          if (!targetAdapterIp && (p.adapter_id || p.adapter_name)) {
+            const match = cachedAdapters.find(a => (p.adapter_id && a.id == p.adapter_id) || (p.adapter_name && a.adapter_name == p.adapter_name));
+            if (match && match.local_ip) {
+              targetAdapterIp = match.local_ip;
+            }
+          }
+
           const res = await invoke('start_proxy_server', {
             proxyId: Number(p.proxy_id),
             port: Number(p.port),
@@ -1677,23 +1685,93 @@
             username: p.username || null,
             password: p.password || null,
             authorizedUsers: p.authorized_users || null,
-            adapterIp: p.adapter_ip || null
+            adapterIp: targetAdapterIp
           });
           log(`🚀 [START_PROXY #${cmd.id}] ${res}`, 'success');
           try { await invoke('sync_and_start_tunnel'); } catch (e) {}
-          await invoke('ack_command', { commandId: cmd.id, success: true, result: { message: res } });
+          await loadRunningProxies();
+          await invoke('ack_command', { commandId: cmd.id, success: true, result: { message: res, adapter_ip: targetAdapterIp } });
+
         } else if (cmd.command === 'stop_proxy') {
           const res = await invoke('stop_proxy_server', { proxyId: Number(p.proxy_id) });
           log(`🛑 [STOP_PROXY #${cmd.id}] ${res}`, 'warn');
           try { await invoke('sync_and_start_tunnel'); } catch (e) {}
+          await loadRunningProxies();
           await invoke('ack_command', { commandId: cmd.id, success: true, result: { message: res } });
-        } else if (cmd.command === 'sync_adapters') {
-          await refreshAdapters();
+
+        } else if (cmd.command === 'restart_proxy') {
+          try { await invoke('stop_proxy_server', { proxyId: Number(p.proxy_id) }); } catch (e) {}
+
+          let targetAdapterIp = p.adapter_ip || null;
+          if (!targetAdapterIp && (p.adapter_id || p.adapter_name)) {
+            const match = cachedAdapters.find(a => (p.adapter_id && a.id == p.adapter_id) || (p.adapter_name && a.adapter_name == p.adapter_name));
+            if (match && match.local_ip) {
+              targetAdapterIp = match.local_ip;
+            }
+          }
+
+          const res = await invoke('start_proxy_server', {
+            proxyId: Number(p.proxy_id),
+            port: Number(p.port),
+            protocol: p.protocol || 'socks5',
+            username: p.username || null,
+            password: p.password || null,
+            authorizedUsers: p.authorized_users || null,
+            adapterIp: targetAdapterIp
+          });
+          log(`🔄 [RESTART_PROXY #${cmd.id}] ${res}`, 'success');
+          try { await invoke('sync_and_start_tunnel'); } catch (e) {}
+          await loadRunningProxies();
+          await invoke('ack_command', { commandId: cmd.id, success: true, result: { message: res, adapter_ip: targetAdapterIp } });
+
+        } else if (cmd.command === 'restart_tunnel') {
+          log(`🔄 [RESTART_TUNNEL #${cmd.id}] Refreshing reverse tunnel daemon...`, 'info');
+          await restartTunnel();
+          await invoke('ack_command', { commandId: cmd.id, success: true, result: { status: 'Tunnel restarted and synchronized' } });
+
+        } else if (cmd.command === 'rotate_ip') {
+          log(`🔄 [ROTATE_IP #${cmd.id}] Processing IP rotation request...`, 'info');
+          let targetAdapter = null;
+          if (p.adapter_name) {
+            targetAdapter = cachedAdapters.find(a => a.adapter_name === p.adapter_name);
+          } else if (p.adapter_id) {
+            targetAdapter = cachedAdapters.find(a => a.id == p.adapter_id);
+          }
+
+          if (targetAdapter) {
+            await testSingleAdapter(targetAdapter.adapter_name);
+            log(`✅ [ROTATE_IP #${cmd.id}] Checked route for ${targetAdapter.adapter_name}, current public IP: ${targetAdapter.external_ip || 'unknown'}`, 'success');
+            await invoke('ack_command', { commandId: cmd.id, success: true, result: { adapter: targetAdapter.adapter_name, public_ip: targetAdapter.external_ip } });
+          } else {
+            await testAllAdaptersInternet();
+            await invoke('ack_command', { commandId: cmd.id, success: true, result: { rotated_all: true } });
+          }
+
+        } else if (cmd.command === 'speed_test') {
+          log(`⚡ [SPEED_TEST #${cmd.id}] Running diagnostic latency test on all interfaces...`, 'info');
           await testAllAdaptersInternet();
-          await invoke('ack_command', { commandId: cmd.id, success: true, result: { synced: true } });
+          const results = cachedAdapters.map(a => ({ name: a.adapter_name, ip: a.external_ip, ping_ms: a.ping_ms }));
+          await invoke('ack_command', { commandId: cmd.id, success: true, result: { adapters: results } });
+
+        } else if (cmd.command === 'sync_adapters') {
+          log(`🔄 [SYNC_ADAPTERS #${cmd.id}] Re-scanning hardware network adapters...`, 'info');
+          await refreshAdapters(true);
+          await testAllAdaptersInternet();
+          await syncAdapters(true);
+          await invoke('ack_command', { commandId: cmd.id, success: true, result: { synced: true, count: cachedAdapters.length } });
+
+        } else if (cmd.command === 'restart_agent') {
+          log(`🔄 [RESTART_AGENT #${cmd.id}] Client agent restart initiated...`, 'warn');
+          await invoke('ack_command', { commandId: cmd.id, success: true, result: { restarting: true } });
+          setTimeout(() => {
+            window.location.reload();
+          }, 1000);
+
         } else if (cmd.command === 'check_health' || cmd.command === 'ping') {
           await invoke('ack_command', { commandId: cmd.id, success: true, result: { status: 'ok', time: new Date().toISOString() } });
+
         } else {
+          log(`ℹ️ [COMMAND #${cmd.id}] Acknowledged command: ${cmd.command}`, 'info');
           await invoke('ack_command', { commandId: cmd.id, success: true, result: { acknowledged: true } });
         }
       } catch (err) {
