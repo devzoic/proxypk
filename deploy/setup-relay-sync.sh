@@ -15,12 +15,19 @@ if [ "$EUID" -ne 0 ]; then
   exit 1
 fi
 
-# Ask for settings
-read -p "Enter Laravel Web App URL (e.g. https://panel.yourdomain.com): " API_URL
-API_URL="${API_URL%/}" # Remove trailing slash
+# Arguments or interactive prompt
+API_URL="${1:-}"
+TOKEN="${2:-}"
 
-read -p "Enter Tunnel Secret Token [default: proxypk-secret-token]: " TOKEN
-TOKEN=${TOKEN:-proxypk-secret-token}
+if [ -z "$API_URL" ]; then
+    read -p "Enter Laravel Web App URL (e.g. https://proxy.devzoic.com): " API_URL || true
+fi
+API_URL="${API_URL%/}"
+
+if [ -z "$TOKEN" ]; then
+    read -p "Enter Tunnel Secret Token [default: proxypk-secret-token]: " TOKEN || true
+fi
+TOKEN="${TOKEN:-proxypk-secret-token}"
 
 mkdir -p /etc/rathole
 mkdir -p /var/log/rathole
@@ -58,7 +65,8 @@ if [ "$HTTP_CODE" -eq 200 ]; then
 
         if [ "$CURRENT_MD5" != "$NEW_MD5" ]; then
             cp "$TEMP_FILE" "$CONFIG_FILE"
-            echo "[$(date -Iseconds)] [Rathole-Sync] Config updated (MD5: $NEW_MD5). Hot-reload triggered." >> /var/log/rathole/sync.log
+            systemctl restart rathole || true
+            echo "[$(date -Iseconds)] [Rathole-Sync] Config updated (MD5: $NEW_MD5). Rathole restarted successfully." >> /var/log/rathole/sync.log
         fi
         
         # Send heartbeat
