@@ -1033,6 +1033,7 @@ async fn sync_and_start_tunnel(state: State<'_, AppState>) -> Result<TunnelStatu
     if config_changed || !is_running {
         if let Some(mut old_child) = child_guard.take() {
             let _ = old_child.kill();
+            let _ = old_child.wait();
         }
 
         // Terminate any detached stale rathole instances
