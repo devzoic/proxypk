@@ -1936,6 +1936,18 @@
     window.addEventListener('DOMContentLoaded', async () => {
       try {
         initViewModesUI();
+
+        // Listen for real-time Rathole tunnel log events from Rust backend
+        if (window.__TAURI__ && window.__TAURI__.event && window.__TAURI__.event.listen) {
+          window.__TAURI__.event.listen('tunnel-log', (event) => {
+            const data = event.payload;
+            if (data && data.message) {
+              const level = data.level === 'error' ? 'error' : data.level === 'warn' ? 'warn' : data.level === 'success' ? 'success' : 'info';
+              log(`🔒 ${data.message}`, level);
+            }
+          });
+        }
+
         await connectToServer();
       } catch (e) {
         console.warn('Auto-connect failed:', e);

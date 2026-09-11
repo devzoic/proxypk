@@ -7,7 +7,7 @@ use api::ApiClient;
 use models::{AdapterInfo, AgentState, InternetCheckResult};
 use std::collections::HashMap;
 use std::sync::Mutex;
-use tauri::State;
+use tauri::{Emitter, State};
 
 /// Shared application state
 pub struct AppState {
@@ -867,6 +867,17 @@ pub struct TunnelStatus {
 }
 
 static TUNNEL_CHILD: Mutex<Option<std::process::Child>> = Mutex::new(None);
+static APP_HANDLE: Mutex<Option<tauri::AppHandle>> = Mutex::new(None);
+
+/// Emit a tunnel log event to the frontend UI so it appears in the Logs panel
+fn emit_tunnel_log(msg: &str, level: &str) {
+    if let Some(ref handle) = *APP_HANDLE.lock().unwrap() {
+        let _ = handle.emit("tunnel-log", serde_json::json!({
+            "message": msg,
+            "level": level,
+        }));
+    }
+}
 
 /// Helper to obtain a reliable, 100% user-writable runtime directory across Windows, Linux, and macOS.
 fn get_runtime_dir() -> std::path::PathBuf {
@@ -1056,10 +1067,23 @@ async fn sync_and_start_tunnel(state: State<'_, AppState>) -> Result<TunnelStatu
         cmd.stdout(std::process::Stdio::piped());
         cmd.stderr(std::process::Stdio::piped());
 
+        // Log the actual config content for diagnostics
+        emit_tunnel_log(&format!("Starting Rathole client with config: {}", config_str), "info");
+        if let Ok(config_content) = std::fs::read_to_string(&config_path) {
+            let service_count = config_content.matches("[client.services.").count();
+            let has_remote = config_content.contains("remote_addr");
+            emit_tunnel_log(&format!("Client TOML: {} services configured, remote_addr present: {}", service_count, has_remote), "info");
+            if service_count == 0 {
+                emit_tunnel_log("WARNING: No services in client TOML — no ports will be forwarded!", "error");
+            }
+        }
+
         match cmd.spawn()
         {
             Ok(mut child) => {
-                log::info!("Spawned Rathole reverse tunnel (PID: {}) using config {:?}", child.id(), config_path);
+                let pid = child.id();
+                log::info!("Spawned Rathole reverse tunnel (PID: {}) using config {:?}", pid, config_path);
+                emit_tunnel_log(&format!("Rathole client process spawned (PID: {})", pid), "info");
 
                 if let Some(stdout) = child.stdout.take() {
                     std::thread::spawn(move || {
@@ -1067,7 +1091,9 @@ async fn sync_and_start_tunnel(state: State<'_, AppState>) -> Result<TunnelStatu
                         let reader = BufReader::new(stdout);
                         for line in reader.lines().flatten() {
                             log::info!("[rathole-client] {}", line);
+                            emit_tunnel_log(&format!("[rathole] {}", line), "info");
                         }
+                        emit_tunnel_log("[rathole] stdout stream ended — process may have exited", "warn");
                     });
                 }
 
@@ -1077,7 +1103,9 @@ async fn sync_and_start_tunnel(state: State<'_, AppState>) -> Result<TunnelStatu
                         let reader = BufReader::new(stderr);
                         for line in reader.lines().flatten() {
                             log::warn!("[rathole-client] {}", line);
+                            emit_tunnel_log(&format!("[rathole] {}", line), "error");
                         }
+                        emit_tunnel_log("[rathole] stderr stream ended — process may have exited", "warn");
                     });
                 }
 
@@ -1085,7 +1113,9 @@ async fn sync_and_start_tunnel(state: State<'_, AppState>) -> Result<TunnelStatu
                 is_running = true;
             }
             Err(e) => {
-                return Err(format!("Failed to launch Rathole executable {:?}: {}", exe_path, e));
+                let msg = format!("Failed to launch Rathole executable {:?}: {}", exe_path, e);
+                emit_tunnel_log(&msg, "error");
+                return Err(msg);
             }
         }
     }
@@ -1445,6 +1475,11 @@ pub fn run() {
             agent: Mutex::new(AgentState::default()),
             api_client: Mutex::new(None),
             running_proxies: Mutex::new(HashMap::new()),
+        })
+        .setup(|app| {
+            let handle = app.handle().clone();
+            *APP_HANDLE.lock().unwrap() = Some(handle);
+            Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             connect_to_server,
